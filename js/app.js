@@ -4,6 +4,8 @@ import * as api from './discogs.js';
 import * as db from './db.js';
 import * as scanner from './scanner.js';
 import { RARITY_LEVELS } from './rarity.js';
+import * as coll from './collection.js';
+import * as refresh from './refresh.js';
 
 const $ = (sel) => document.querySelector(sel);
 const CACHE_MAX_AGE = 12 * 60 * 60 * 1000; // une fiche de moins de 12 h n'est pas re-téléchargée
@@ -20,6 +22,32 @@ function money(value, currency = 'EUR') {
     return `${value.toFixed(2)} ${currency}`;
   }
 }
+/** Vignette : image si on a une URL, sinon un disque gris. */
+const thumbHtml = (url, cls = 'thumb') => (url
+  ? `<img class="${cls}" src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.removeAttribute('src')">`
+  : `<div class="${cls}" aria-hidden="true"></div>`);
+
+/** "▲ +1,20 €" en vert, "▼ −0,50 €" en rouge */
+function deltaHtml(d) {
+  if (d === null || d === undefined) return '';
+  if (Math.abs(d) < 0.005) return '<span class="delta same">= stable</span>';
+  const sign = d > 0 ? '+' : '−';
+  return `<span class="delta ${d > 0 ? 'up' : 'down'}">${d > 0 ? '▲' : '▼'} ${sign}${money(Math.abs(d))}</span>`;
+}
+
+const dateFr = (ts) => (ts ? new Date(ts).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
+
+function download(filename, content, type) {
+  const blob = content instanceof Blob ? content : new Blob([content], { type });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
 const num = (n) => (n === null || n === undefined ? '—' : new Intl.NumberFormat('fr-FR').format(n));
 
 function timeAgo(ts) {
@@ -55,7 +83,8 @@ api.setWaitListener((ms) => toast(`Limite Discogs atteinte : reprise dans ${Math
 
 // ---------- Navigation (par #hash, compatible bouton Retour du téléphone) ----------
 
-const TABS = ['scan', 'catno', 'photo', 'history', 'settings'];
+const TABS = ['scan', 'catno', 'photo', 'collection', 'history', 'settings'];
+let collectionScroll = 0;
 let currentView = null;
 let searchState = null; // { result, items, label, method, query }
 let pendingSource = null; // origine de la prochaine fiche ouverte (pour l'historique)
@@ -67,9 +96,11 @@ function go(hash) {
 
 async function route() {
   const [, name = 'scan', param] = location.hash.replace(/^#\/?/, '#/').split('/');
-  const view = ['results', 'release', ...TABS].includes(name) ? name : 'scan';
+  const view = ['results', 'release', 'stats', ...TABS].includes(name) ? name : 'scan';
 
   if (currentView === 'scan' && view !== 'scan') await scanner.stopCamera().then(updateCamUi);
+  if (currentView === 'collection' && view !== 'collection') collectionScroll = window.scrollY;
+  const backToCollection = currentView === 'release' && view === 'collection';
   currentView = view;
 
   document.querySelectorAll('.view').forEach((v) => { v.hidden = v.id !== `view-${view}`; });
@@ -77,9 +108,13 @@ async function route() {
   const section = $(`#view-${view}`);
   $('#page-title').textContent = section.dataset.title;
   $('#back-btn').hidden = TABS.includes(view);
-  document.querySelectorAll('.tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === view));
-  $('#token-banner').hidden = !!api.getToken() || view === 'settings' || view === 'history';
+  const tab = view === 'stats' ? 'collection' : view;
+  document.querySelectorAll('.tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
+  $('#token-banner').hidden = !!api.getToken() || !['scan', 'catno', 'photo'].includes(view);
   window.scrollTo(0, 0);
+
+  if (view === 'collection') renderCollection().then(() => { if (backToCollection) window.scrollTo(0, collectionScroll); });
+  if (view === 'stats') renderStats();
 
   if (view === 'history') renderHistory();
   if (view === 'settings') renderSettings();
@@ -261,7 +296,7 @@ function resultItem(r) {
     r.catno && r.catno !== 'none' && `<span>${esc(r.catno)}</span>`,
   ].filter(Boolean).join('');
   return `<li><a class="item" href="#/release/${r.id}" data-id="${r.id}">
-    <img class="thumb" src="${esc(r.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.removeAttribute('src')">
+    ${thumbHtml(r.thumb)}
     <div class="item-body">
       <div class="item-title">${esc(r.title)}</div>
       <div class="item-artist">${esc(r.artist)}</div>
@@ -322,7 +357,8 @@ async function openRelease(id, { force = false } = {}) {
   pendingSource = null;
 
   let release = await db.getRelease(releaseId).catch(() => null);
-  const fresh = release?.market?.fetchedAt && Date.now() - release.market.fetchedAt < CACHE_MAX_AGE;
+  // Fiche complète (avec prix par état) de moins de 12 h : pas besoin de la retélécharger.
+  const fresh = release?.detailFetchedAt && Date.now() - release.detailFetchedAt < CACHE_MAX_AGE;
 
   if (release) renderRelease(release);
   else container.innerHTML = '';
@@ -331,7 +367,10 @@ async function openRelease(id, { force = false } = {}) {
     if (!release) setLoading(true, 'Chargement de la fiche…');
     try {
       const data = await api.fetchRelease(releaseId);
-      if (currentView !== 'release' || location.hash !== `#/release/${releaseId}`) return; // l'utilisateur est parti
+      if (currentView !== 'release' || location.hash !== `#/release/${releaseId}`) {
+        await db.saveRelease(data); // l'utilisateur est parti : on garde quand même les données
+        return;
+      }
       release = await db.saveRelease(data);
       renderRelease(release);
       if (force) toast('Prix mis à jour.');
@@ -339,7 +378,8 @@ async function openRelease(id, { force = false } = {}) {
       if (!release) container.innerHTML = `<div class="empty"><p>${esc(e.message)}</p><button class="btn primary" id="retry-btn">Réessayer</button></div>`;
       else {
         renderRelease(release);
-        toast(`${e.message} (données affichées : ${timeAgo(release.market?.fetchedAt || release.lastSeenAt)})`, 'error');
+        const when = release.market?.fetchedAt ? ` (données du ${dateFr(release.market.fetchedAt)})` : '';
+        toast(`${e.message}${when}`, 'error');
       }
       $('#retry-btn')?.addEventListener('click', () => openRelease(releaseId));
       return;
@@ -347,52 +387,108 @@ async function openRelease(id, { force = false } = {}) {
       setLoading(false);
     }
   } else {
-    release = await db.saveRelease(release); // met à jour "vu le…" et le compteur
+    await db.touchRelease(releaseId); // met à jour "vu le…" et le compteur
   }
 
   if (source) db.addHistory({ releaseId, method: source.method, query: source.query }).catch(() => {});
 }
 
+const CONDITION_KEYS = ['', ...api.CONDITION_ORDER];
+const conditionOptions = (current) => CONDITION_KEYS.map((k) => `<option value="${k}"${k === (current || '') ? ' selected' : ''}>${k ? `${k} – ${api.CONDITION_LABELS[k]}` : 'Non renseigné'}</option>`).join('');
+
+function collectionCardHtml(r) {
+  if (!r.inCollection) {
+    return `<button class="btn primary block" id="coll-add">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg> Ajouter à ma collection</button>`;
+  }
+  const c = r.collection || {};
+  const v = coll.valueOf(r);
+  const info = r.valueInfo || {};
+  const sourceTxt = info.source === 'recordscanner' ? 'prix importé de Record Scanner'
+    : info.source === 'discogs' ? `prix le plus bas Discogs du ${dateFr(info.updatedAt)}` : '';
+  const prevTxt = info.previous !== null && info.previous !== undefined
+    ? `<p class="help">Valeur précédente : ${money(info.previous)}${info.previousAt ? ` (${dateFr(info.previousAt)})` : ''}</p>` : '';
+  const noneTxt = info.noneForSale ? '<p class="help">Aucun exemplaire en vente lors du dernier contrôle : valeur conservée.</p>' : '';
+  const q = coll.quantityOf(r);
+  return `<form class="card form coll-form" id="coll-form" autocomplete="off">
+    <h2><span class="badge-in">✓ Dans ma collection</span></h2>
+    <div class="coll-value"><span class="value">${v !== null ? money(v) : '—'}</span>${deltaHtml(coll.valueDelta(r))}</div>
+    <p class="help">${esc(sourceTxt)}${q > 1 && v !== null ? ` · ${q} exemplaires = ${money(v * q)}` : ''}</p>
+    ${prevTxt}${noneTxt}
+    <div class="grid2">
+      <div><label for="c-cond">État du disque</label><select id="c-cond">${conditionOptions(c.condition)}</select></div>
+      <div><label for="c-sleeve">État de la pochette</label><select id="c-sleeve">${conditionOptions(c.sleeveCondition)}</select></div>
+      <div><label for="c-shelf">Étagère</label><input id="c-shelf" value="${esc(c.shelf ?? '')}"></div>
+      <div><label for="c-pos">Position</label><input id="c-pos" value="${esc(c.positionInShelf ?? '')}"></div>
+      <div><label for="c-qty">Quantité</label><input id="c-qty" type="number" min="1" max="99" inputmode="numeric" value="${q}"></div>
+      <div><label for="c-added">Ajouté le</label><input id="c-added" value="${esc(dateFr(c.addedAt))}" disabled></div>
+    </div>
+    <label for="c-notes">Note perso</label>
+    <textarea id="c-notes" rows="3" placeholder="ex. acheté en brocante, pochette signée…">${esc(c.notes || '')}</textarea>
+    <button class="btn primary block" type="submit">Enregistrer</button>
+    <button class="btn ghost block danger" type="button" id="coll-remove">Retirer de ma collection</button>
+  </form>`;
+}
+
 function renderRelease(r) {
   $('#page-title').textContent = r.artist || 'Fiche';
   const m = r.market || {};
-  const level = r.rarity?.level || 'common';
+  const hasMarket = m.fetchedAt !== undefined;
+  const level = r.rarity?.level;
   const sugg = m.suggestions;
   const suggCurrency = sugg ? Object.values(sugg)[0]?.currency : null;
 
   const labelsTxt = (r.labels || []).map((l) => `${esc(l.name)}${l.catno && l.catno !== 'none' ? ` – ${esc(l.catno)}` : ''}`).join('<br>');
-  const grades = sugg
-    ? `<table class="grades">${api.CONDITION_ORDER.filter((k) => sugg[k]).map((k) => `<tr><td><span class="abbr">${k}</span>${api.CONDITION_LABELS[k]}</td><td>${money(sugg[k].value, sugg[k].currency)}</td></tr>`).join('')}</table>
-       ${suggCurrency && suggCurrency !== 'EUR' ? `<p class="help">Ces prix sont dans la devise de ton compte Discogs (${esc(suggCurrency)}). Choisis EUR dans tes paramètres vendeur Discogs pour les avoir en euros.</p>` : ''}`
-    : `<p class="help">Prix suggérés par état indisponibles. Discogs ne les fournit qu'aux comptes ayant rempli leurs <a href="https://www.discogs.com/settings/seller/" target="_blank" rel="noopener">paramètres vendeur</a>.</p>`;
+  let grades;
+  if (sugg) {
+    grades = `<table class="grades">${api.CONDITION_ORDER.filter((k) => sugg[k]).map((k) => `<tr><td><span class="abbr">${k}</span>${api.CONDITION_LABELS[k]}</td><td>${money(sugg[k].value, sugg[k].currency)}</td></tr>`).join('')}</table>
+       ${suggCurrency && suggCurrency !== 'EUR' ? `<p class="help">Ces prix sont dans la devise de ton compte Discogs (${esc(suggCurrency)}). Choisis EUR dans tes paramètres vendeur Discogs pour les avoir en euros.</p>` : ''}`;
+  } else if (!r.detailFetchedAt) {
+    grades = '<p class="help">Pas encore récupérés depuis Discogs (connexion nécessaire).</p>';
+  } else {
+    grades = '<p class="help">Prix suggérés par état indisponibles. Discogs ne les fournit qu\'aux comptes ayant rempli leurs <a href="https://www.discogs.com/settings/seller/" target="_blank" rel="noopener">paramètres vendeur</a>.</p>';
+  }
 
   const tracks = (r.tracklist || []).map((t) => (t.heading
     ? `<li class="heading">${esc(t.title)}</li>`
     : `<li><span class="pos">${esc(t.position)}</span><span>${esc(t.title)}</span><span class="dur">${esc(t.duration)}</span></li>`)).join('');
 
-  $('#release-content').innerHTML = `
-    <div class="hero">
-      <img class="cover" src="${esc(r.coverUrl)}" alt="Pochette" referrerpolicy="no-referrer" onerror="this.removeAttribute('src')">
-      <div class="hero-text">
-        <div class="artist">${esc(r.artist)}</div>
-        <h2>${esc(r.title)}</h2>
-      </div>
-    </div>
+  const hasLowest = m.lowestPrice !== null && m.lowestPrice !== undefined;
+  const priceLabel = m.blockedFromSale ? 'vente interdite sur Discogs'
+    : hasLowest ? `prix le plus bas actuel${m.currency && m.currency !== 'EUR' ? ` (${esc(m.currency)})` : ''}`
+      : 'aucun exemplaire en vente';
 
-    <div class="card">
-      <h2>Prix &amp; rareté</h2>
+  const priceCard = hasMarket ? `
       <div class="price-main">
         <span class="value">${m.blockedFromSale ? '—' : money(m.lowestPrice, m.currency || 'EUR')}</span>
-        <span class="label">${m.blockedFromSale ? 'vente interdite sur Discogs' : m.lowestPrice != null ? 'prix le plus bas actuel' : 'aucun exemplaire en vente'}</span>
+        <span class="label">${priceLabel}</span>
       </div>
       <div class="stats">
         <div class="stat"><b>${num(m.numForSale)}</b><span>en vente</span></div>
         <div class="stat"><b>${num(r.community?.have)}</b><span>l'ont</span></div>
         <div class="stat"><b>${num(r.community?.want)}</b><span>le recherchent</span></div>
       </div>
-      <div class="meter ${level}"><i></i><i></i><i></i></div>
+      ${level ? `<div class="meter ${level}"><i></i><i></i><i></i></div>
       <span class="rarity ${level}">${esc(RARITY_LEVELS[level].label)}</span>
-      <span class="help">&nbsp;${esc(RARITY_LEVELS[level].hint)}</span>
+      <span class="help">&nbsp;${esc(RARITY_LEVELS[level].hint)}</span>` : ''}`
+    : '<p class="help">Prix Discogs pas encore récupérés (connexion nécessaire).</p>';
+
+  $('#release-content').innerHTML = `
+    <div class="hero">
+      ${r.coverUrl
+    ? `<img class="cover" src="${esc(r.coverUrl)}" alt="Pochette" referrerpolicy="no-referrer" onerror="this.removeAttribute('src')">`
+    : '<div class="cover placeholder" aria-hidden="true"></div>'}
+      <div class="hero-text">
+        <div class="artist">${esc(r.artist)}</div>
+        <h2>${esc(r.title)}</h2>
+      </div>
+    </div>
+
+    ${collectionCardHtml(r)}
+
+    <div class="card">
+      <h2>Prix &amp; rareté</h2>
+      ${priceCard}
     </div>
 
     <div class="card">
@@ -417,13 +513,291 @@ function renderRelease(r) {
 
     <a class="btn primary block" href="${esc(r.discogsUrl)}" target="_blank" rel="noopener">Voir sur Discogs</a>
     <button class="btn ghost block" id="refresh-btn">Actualiser les prix</button>
-    <p class="updated">Données Discogs du ${new Date(m.fetchedAt || r.lastSeenAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}</p>
+    ${hasMarket ? `<p class="updated">Prix Discogs du ${new Date(m.fetchedAt).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' })}</p>` : ''}
   `;
   $('#refresh-btn').addEventListener('click', (e) => {
     e.target.disabled = true;
     e.target.textContent = 'Actualisation…';
     openRelease(r.id, { force: true });
   });
+  bindCollectionCard(r);
+}
+
+function bindCollectionCard(r) {
+  $('#coll-add')?.addEventListener('click', async () => {
+    const rec = await db.updateRelease(r.id, (x) => {
+      if (!x) return null;
+      x.inCollection = 1;
+      x.collection = {
+        addedAt: Date.now(), quantity: 1, condition: '', sleeveCondition: '', notes: '',
+        shelf: '', positionInShelf: '', format: api.formatCategory(x.formats) || x.formatText || '',
+        source: 'app', importPrice: null, importCurrency: null, rsUniqueIds: [], tags: '', color: '',
+      };
+      return x;
+    });
+    if (rec) {
+      toast('Ajouté à ta collection.');
+      renderRelease(rec);
+    }
+  });
+
+  $('#coll-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const qty = Math.min(99, Math.max(1, parseInt($('#c-qty').value, 10) || 1));
+    const rec = await db.updateRelease(r.id, (x) => {
+      if (!x?.collection) return null;
+      Object.assign(x.collection, {
+        condition: $('#c-cond').value,
+        sleeveCondition: $('#c-sleeve').value,
+        shelf: $('#c-shelf').value.trim(),
+        positionInShelf: $('#c-pos').value.trim(),
+        quantity: qty,
+        notes: $('#c-notes').value.trim(),
+      });
+      return x;
+    });
+    if (rec) {
+      toast('Modifications enregistrées.');
+      renderRelease(rec);
+    }
+  });
+
+  $('#coll-remove')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    if (btn.dataset.confirm !== '1') {
+      btn.dataset.confirm = '1';
+      btn.textContent = 'Toucher encore pour confirmer';
+      setTimeout(() => { if (btn.isConnected) { btn.dataset.confirm = ''; btn.textContent = 'Retirer de ma collection'; } }, 4000);
+      return;
+    }
+    const rec = await db.updateRelease(r.id, (x) => {
+      if (!x) return null;
+      x.inCollection = 0;
+      x.collection = null;
+      return x;
+    });
+    toast('Retiré de ta collection.');
+    if (rec) renderRelease(rec);
+  });
+}
+
+// ---------- Collection ----------
+
+const VIEW_KEY = 'collection_view';
+let collView = { q: '', sort: 'artist', genre: '', format: '', shelf: '' };
+try { collView = { ...collView, ...JSON.parse(localStorage.getItem(VIEW_KEY) || '{}') }; } catch { /* rien */ }
+const saveCollView = () => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(collView)); } catch { /* rien */ } };
+let collItems = [];
+
+function fillSelect(sel, options, current, allLabel) {
+  const opts = (allLabel ? [`<option value="">${allLabel}</option>`] : [])
+    .concat(options.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`));
+  sel.innerHTML = opts.join('');
+  sel.value = options.some(([v]) => v === current) ? current : (allLabel ? '' : options[0]?.[0] ?? '');
+  if (allLabel) sel.classList.toggle('active', !!sel.value);
+  return sel.value;
+}
+
+function collectionItemHtml(r) {
+  const v = coll.valueOf(r);
+  const q = coll.quantityOf(r);
+  return `<li><a class="item" href="#/release/${r.id}">
+    ${thumbHtml(r.thumbUrl)}
+    <div class="item-body">
+      <div class="item-title">${esc(r.title)}</div>
+      <div class="item-artist">${esc(r.artist)}</div>
+      <div class="item-meta">${r.year ? `<span><b>${esc(r.year)}</b></span>` : ''}<span>${esc(coll.formatOf(r))}</span>${q > 1 ? `<span class="qty">×${q}</span>` : ''}${r.collection?.condition ? `<span>${esc(r.collection.condition)}</span>` : ''}</div>
+    </div>
+    <div class="item-side">
+      <div class="val">${v !== null ? money(v) : '—'}</div>
+      <div>${deltaHtml(coll.valueDelta(r))}</div>
+    </div>
+  </a></li>`;
+}
+
+async function renderCollection() {
+  try { collItems = await db.getCollection(); } catch { collItems = []; }
+  if (currentView !== 'collection') return;
+  const stats = coll.computeStats(collItems);
+  $('#coll-total').textContent = collItems.length ? money(stats.total) : '—';
+  $('#coll-count').textContent = collItems.length
+    ? `${num(stats.discs)} vinyle${stats.discs > 1 ? 's' : ''} · valeur estimée totale`
+    : 'Aucun vinyle pour l\'instant';
+  $('#job-card').hidden = !collItems.length;
+  $('.toolbar').hidden = !collItems.length;
+
+  const opts = coll.filterOptions(collItems);
+  collView.sort = fillSelect($('#coll-sort'), Object.entries(coll.SORTS), collView.sort, '');
+  collView.genre = fillSelect($('#coll-genre'), opts.genres.map((g) => [g, g]), collView.genre, 'Tous les genres');
+  collView.format = fillSelect($('#coll-format'), opts.formats.map((f) => [f, f]), collView.format, 'Tous les formats');
+  collView.shelf = fillSelect($('#coll-shelf'), opts.shelves.map((s) => [s, `Étagère ${s}`]), collView.shelf, 'Toutes les étagères');
+  $('#coll-search').value = collView.q;
+  renderCollectionList();
+  renderJob(refresh.getState());
+}
+
+function renderCollectionList() {
+  const filters = { q: collView.q, genre: collView.genre, format: collView.format, shelf: collView.shelf };
+  const shown = coll.sortItems(coll.filterItems(collItems, filters), collView.sort);
+  $('#coll-list').innerHTML = shown.map(collectionItemHtml).join('');
+  const filtered = !!(filters.q || filters.genre || filters.format || filters.shelf);
+  $('#coll-reset').hidden = !filtered;
+  $('#coll-empty').hidden = collItems.length > 0;
+  if (!collItems.length) $('#coll-shown').textContent = '';
+  else if (filtered) {
+    const total = shown.reduce((s, r) => s + (coll.valueOf(r) ?? 0) * coll.quantityOf(r), 0);
+    $('#coll-shown').textContent = shown.length
+      ? `${num(shown.length)} résultat${shown.length > 1 ? 's' : ''} · ${money(total)}`
+      : 'Aucun disque ne correspond.';
+  } else {
+    $('#coll-shown').textContent = `${num(shown.length)} références`;
+  }
+}
+
+let searchTimer;
+$('#coll-search').addEventListener('input', (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { collView.q = e.target.value; saveCollView(); renderCollectionList(); }, 150);
+});
+[['#coll-sort', 'sort'], ['#coll-genre', 'genre'], ['#coll-format', 'format'], ['#coll-shelf', 'shelf']].forEach(([sel, key]) => {
+  $(sel).addEventListener('change', (e) => {
+    collView[key] = e.target.value;
+    if (key !== 'sort') e.target.classList.toggle('active', !!e.target.value);
+    saveCollView();
+    renderCollectionList();
+  });
+});
+$('#coll-reset').addEventListener('click', () => {
+  Object.assign(collView, { q: '', genre: '', format: '', shelf: '' });
+  saveCollView();
+  ['#coll-genre', '#coll-format', '#coll-shelf'].forEach((s) => { $(s).value = ''; $(s).classList.remove('active'); });
+  $('#coll-search').value = '';
+  renderCollectionList();
+});
+
+// ---------- Mise à jour des prix de la collection ----------
+
+function renderJob(st) {
+  const running = refresh.isRunning();
+  const pct = st && st.ids?.length ? Math.round((st.index / st.ids.length) * 100) : 0;
+  // Indicateur visible sur tous les écrans pendant la mise à jour
+  $('#job-pill').hidden = !running;
+  $('#job-line').hidden = !running;
+  $('#job-pill-text').textContent = `${pct} %`;
+  $('#job-line-bar').style.width = `${pct}%`;
+
+  if (currentView !== 'collection') return;
+  const btn = $('#job-btn');
+  const text = $('#job-text');
+  $('#job-progress').hidden = !(st && (running || st.status === 'paused'));
+  $('#job-bar').style.width = `${pct}%`;
+  if (running) {
+    const minutes = Math.max(1, Math.round((st.remainingSeconds || 0) / 60));
+    text.textContent = `Mise à jour : ${st.index} / ${st.ids.length} — environ ${minutes} min restante${minutes > 1 ? 's' : ''}. Tu peux utiliser l'appli, mais garde-la ouverte.`;
+    btn.textContent = 'Pause';
+    btn.className = 'btn ghost';
+  } else if (st?.status === 'paused') {
+    text.textContent = `En pause : ${st.index} / ${st.ids.length} disques faits.${st.lastError ? ` ${st.lastError}` : ''}`;
+    btn.textContent = 'Reprendre';
+    btn.className = 'btn primary';
+  } else {
+    const last = st?.lastCompletedAt;
+    let txt = last ? `Dernière mise à jour : ${new Date(last).toLocaleString('fr-FR', { dateStyle: 'medium', timeStyle: 'short' })}` : 'Prix jamais mis à jour depuis Discogs.';
+    if (st?.status === 'done' && typeof st.totalAfter === 'number' && typeof st.totalBefore === 'number') {
+      const d = Math.round((st.totalAfter - st.totalBefore) * 100) / 100;
+      txt += ` · total ${money(st.totalBefore)} → ${money(st.totalAfter)} (${d >= 0 ? '+' : '−'}${money(Math.abs(d))})`;
+      if (st.failed) txt += ` · ${st.failed} introuvable${st.failed > 1 ? 's' : ''} sur Discogs`;
+    }
+    text.textContent = txt;
+    btn.textContent = 'Actualiser les prix';
+    btn.className = 'btn primary';
+  }
+}
+
+let jobRenderTimer;
+refresh.onChange((st) => {
+  renderJob(st);
+  // On rafraîchit la liste de temps en temps pendant la mise à jour (pas à chaque disque).
+  if (currentView === 'collection' && (!refresh.isRunning() || st.index % 10 === 0)) {
+    clearTimeout(jobRenderTimer);
+    jobRenderTimer = setTimeout(() => {
+      if (currentView !== 'collection') return;
+      const y = window.scrollY;
+      renderCollection().then(() => window.scrollTo(0, y));
+    }, 300);
+  }
+  if (!refresh.isRunning() && st.status === 'done') toast('Mise à jour des prix terminée.');
+  if (!refresh.isRunning() && st.status === 'paused' && st.lastError) toast(`Mise à jour en pause : ${st.lastError}`, 'error');
+});
+
+$('#job-btn').addEventListener('click', async () => {
+  if (refresh.isRunning()) { refresh.pause(); toast('Pause après le disque en cours…'); return; }
+  const st = refresh.getState();
+  try {
+    await refresh.start({ resume: st?.status === 'paused' });
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+});
+
+// ---------- Statistiques ----------
+
+async function renderStats() {
+  const box = $('#stats-content');
+  let items = [];
+  try { items = await db.getCollection(); } catch { /* rien */ }
+  if (currentView !== 'stats') return;
+  if (!items.length) {
+    box.innerHTML = '<div class="empty"><p>Ta collection est vide.</p></div>';
+    return;
+  }
+  const s = coll.computeStats(items);
+  const st = refresh.getState();
+  const totalDelta = s.comparable
+    ? Math.round(items.reduce((acc, r) => acc + (coll.valueDelta(r) ?? 0) * coll.quantityOf(r), 0) * 100) / 100
+    : null;
+
+  const maxG = Math.max(...s.genres.map(([, n]) => n), 1);
+  const genres = s.genres.map(([g, n]) => `<div class="hbar" title="${esc(g)} : ${n}">
+      <span class="name">${esc(g)}</span>
+      <span class="track"><span class="fill" style="display:block;width:${(n / maxG) * 100}%"></span></span>
+      <span class="n">${n}</span></div>`).join('');
+
+  const maxD = Math.max(...s.decades.map(([, n]) => n), 1);
+  const decadesBars = s.decades.map(([d, n]) => `<div class="vbar" title="Années ${d} : ${n}">
+      <span class="n">${n}</span><span class="fill" style="height:${(n / maxD) * 100}%"></span></div>`).join('');
+  const decadesLabels = s.decades.map(([d]) => `<span>${d}</span>`).join('');
+
+  const top = s.top.map((r) => `<li><a href="#/release/${r.id}">
+      ${thumbHtml(r.thumbUrl)}
+      <span class="t"><div>${esc(r.title)}</div><div class="a">${esc(r.artist)}${r.year ? ` · ${r.year}` : ''}</div></span>
+      <span class="p">${money(coll.valueOf(r))}</span></a></li>`).join('');
+
+  box.innerHTML = `
+    <div class="tiles">
+      <div class="tile"><div class="k">Vinyles</div><div class="v">${num(s.discs)}</div><div class="s">${num(s.references)} références</div></div>
+      <div class="tile"><div class="k">Valeur totale</div><div class="v">${money(s.total)}</div><div class="s">${totalDelta !== null ? `${deltaHtml(totalDelta)} vs avant` : 'estimée'}</div></div>
+      <div class="tile"><div class="k">Valeur moyenne</div><div class="v">${s.average !== null ? money(s.average) : '—'}</div><div class="s">par vinyle</div></div>
+      <div class="tile"><div class="k">Prix mis à jour</div><div class="v" style="font-size:1.05rem">${st?.lastCompletedAt ? dateFr(st.lastCompletedAt) : 'Jamais'}</div><div class="s">${s.valued < s.discs ? `${num(s.discs - s.valued)} sans prix` : 'tous ont un prix'}</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Top 10 des plus chers</h2>
+      <ol class="top10">${top}</ol>
+    </div>
+
+    <div class="card">
+      <h2>Par genre</h2>
+      <div class="hbars">${genres}</div>
+      <p class="help">Nombre de vinyles. Un disque peut avoir plusieurs genres.</p>
+    </div>
+
+    <div class="card">
+      <h2>Par décennie</h2>
+      ${s.decades.length ? `<div class="vbars">${decadesBars}</div><div class="vlabels">${decadesLabels}</div>` : ''}
+      <p class="help">Nombre de vinyles par décennie de sortie${s.unknownYear ? ` · ${num(s.unknownYear)} sans année connue` : ''}.</p>
+    </div>
+  `;
 }
 
 // ---------- 7. Historique ----------
@@ -437,7 +811,7 @@ async function renderHistory() {
   if (currentView !== 'history') return;
   list.innerHTML = items.map(({ release: r, at, method }) => `
     <li><a class="item" href="#/release/${r.id}">
-      <img class="thumb" src="${esc(r.thumbUrl)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.removeAttribute('src')">
+      ${thumbHtml(r.thumbUrl)}
       <div class="item-body">
         <div class="item-title">${esc(r.title)}</div>
         <div class="item-artist">${esc(r.artist)}</div>
@@ -468,18 +842,118 @@ $('#history-clear').addEventListener('click', async (e) => {
   renderHistory();
 });
 
+// ---------- Import Record Scanner ----------
+
+function parseCsvFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!window.Papa) { reject(new Error('Le module de lecture CSV ne s\'est pas chargé. Recharge la page.')); return; }
+    window.Papa.parse(file, {
+      header: true,
+      skipEmptyLines: 'greedy',
+      transformHeader: (h) => h.replace(/^﻿/, '').trim(),
+      complete: (res) => resolve(res),
+      error: (err) => reject(new Error(`Fichier illisible : ${err.message || err}`)),
+    });
+  });
+}
+
+$('#rs-file').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  const box = $('#rs-result');
+  box.hidden = false;
+  box.innerHTML = '<p class="help">Lecture du fichier…</p>';
+  try {
+    const { data, meta, errors } = await parseCsvFile(file);
+    if (!meta.fields?.includes(coll.RS_REQUIRED)) {
+      throw new Error('Ce fichier ne ressemble pas à un export Record Scanner (colonne « DiscogsReleaseId » absente).');
+    }
+    const existing = await db.getAllReleasesMap();
+    const { records, summary } = coll.prepareImport(data, existing);
+    await db.putMany(records);
+    // Lignes que le lecteur CSV n'a pas pu découper correctement
+    const parseErrors = errors.filter((er) => er.type !== 'Delimiter');
+    const errorsTotal = summary.errors + parseErrors.length;
+    const details = [
+      ...summary.errorDetails,
+      ...parseErrors.map((er) => `Ligne ${er.row !== undefined ? er.row + 2 : '?'} : ${er.message}`),
+    ];
+    box.innerHTML = `
+      <div class="import-nums">
+        <div class="stat"><b>${num(summary.imported)}</b><span>importés</span></div>
+        <div class="stat"><b>${num(summary.duplicates)}</b><span>doublons</span></div>
+        <div class="stat${errorsTotal ? ' err' : ''}"><b>${num(errorsTotal)}</b><span>erreurs</span></div>
+      </div>
+      <p class="help">${num(summary.rows)} lignes lues : ${num(summary.created)} nouveaux disques, ${num(summary.updated)} complétés, ${num(summary.unchanged)} déjà importés (inchangés).
+      ${summary.duplicates ? 'Les doublons (même disque plusieurs fois) sont regroupés en un seul disque avec une quantité.' : ''}</p>
+      ${details.length ? `<ul>${details.slice(0, 20).map((d) => `<li>${esc(d)}</li>`).join('')}${details.length > 20 ? `<li>… et ${details.length - 20} autres</li>` : ''}</ul>` : ''}
+      <a class="btn ghost block" href="#/collection">Voir ma collection</a>`;
+    renderSettingsStats();
+  } catch (err) {
+    box.innerHTML = `<p class="status error">${esc(err.message || 'Import impossible.')}</p>`;
+  }
+});
+
+// ---------- Sauvegarde ----------
+
+const today = () => new Date().toISOString().slice(0, 10);
+
+$('#export-csv-btn').addEventListener('click', async () => {
+  try {
+    const items = coll.sortItems(await db.getCollection(), 'artist');
+    if (!items.length) { setStatus($('#backup-status'), 'Ta collection est vide.', 'error'); return; }
+    download(`ma-collection-vinyles-${today()}.csv`, coll.collectionToCsv(items), 'text/csv;charset=utf-8');
+    setStatus($('#backup-status'), `${num(items.length)} disques exportés en CSV.`, 'ok');
+  } catch (e) {
+    setStatus($('#backup-status'), `Export impossible : ${e.message}`, 'error');
+  }
+});
+
+$('#export-btn').addEventListener('click', async () => {
+  try {
+    const data = await db.exportAll();
+    download(`sauvegarde-vinyles-${today()}.json`, JSON.stringify(data), 'application/json');
+    setStatus($('#backup-status'), `Sauvegarde créée (${num(data.releases.length)} fiches). Garde-la en lieu sûr (Drive, mail…).`, 'ok');
+  } catch (e) {
+    setStatus($('#backup-status'), `Export impossible : ${e.message}`, 'error');
+  }
+});
+
+$('#restore-file').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  const status = $('#backup-status');
+  setStatus(status, 'Restauration…');
+  try {
+    let data;
+    try { data = JSON.parse(await file.text()); } catch { throw new Error('Ce fichier n\'est pas un JSON valide.'); }
+    const res = await db.importBackup(data);
+    setStatus(status, `✓ Restauré : ${num(res.releases)} fiches, dont ${num(res.inCollection)} dans la collection.`, 'ok');
+    renderSettingsStats();
+  } catch (err) {
+    setStatus(status, err.message, 'error');
+  }
+});
+
 // ---------- Réglages ----------
+
+async function renderSettingsStats() {
+  try {
+    const [n, items] = await Promise.all([db.countReleases(), db.getCollection()]);
+    const discs = items.reduce((s, r) => s + coll.quantityOf(r), 0);
+    $('#data-stats').textContent = `Sur ce téléphone : ${num(discs)} vinyle${discs > 1 ? 's' : ''} dans ta collection, ${num(n)} fiche${n > 1 ? 's' : ''} au total.`;
+  } catch {
+    $('#data-stats').textContent = 'Stockage local indisponible (navigation privée ?).';
+  }
+}
 
 async function renderSettings() {
   const input = $('#token-input');
   input.value = api.getToken();
   setStatus($('#token-status'), api.getToken() ? 'Jeton enregistré sur ce téléphone.' : 'Aucun jeton enregistré.');
-  try {
-    const n = await db.countReleases();
-    $('#data-stats').textContent = `${num(n)} vinyle${n > 1 ? 's' : ''} enregistré${n > 1 ? 's' : ''} sur ce téléphone.`;
-  } catch {
-    $('#data-stats').textContent = 'Stockage local indisponible (navigation privée ?).';
-  }
+  renderSettingsStats();
 }
 
 $('#token-show').addEventListener('click', () => {
@@ -518,22 +992,6 @@ $('#token-delete').addEventListener('click', () => {
   setStatus($('#token-status'), 'Jeton supprimé de ce téléphone.');
 });
 
-$('#export-btn').addEventListener('click', async () => {
-  try {
-    const data = await db.exportAll();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `vinyles-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  } catch (e) {
-    toast(`Export impossible : ${e.message}`, 'error');
-  }
-});
-
 // ---------- Démarrage ----------
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
@@ -544,3 +1002,4 @@ navigator.storage?.persist?.().catch(() => {});
 
 if (!api.getToken() && !location.hash) location.hash = '#/settings';
 route();
+renderJob(refresh.getState());

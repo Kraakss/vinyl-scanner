@@ -238,29 +238,12 @@ async function fetchMarket(id) {
   return market;
 }
 
-/** Récupère la fiche complète + les prix, et calcule la rareté. */
-export async function fetchRelease(id) {
-  const [r, market] = await Promise.all([request(`/releases/${id}`, { curr_abbr: CURRENCY }), fetchMarket(id)]);
-
-  if (market.numForSale === undefined) market.numForSale = r.num_for_sale ?? 0;
-  if (market.lowestPrice === undefined) {
-    market.lowestPrice = r.lowest_price ?? null;
-    market.currency = CURRENCY;
-  }
-
+/** Transforme une fiche brute Discogs en objet propre (sans les prix). */
+function mapRelease(r) {
   const images = r.images || [];
   const primary = images.find((i) => i.type === 'primary') || images[0];
   const labels = (r.labels || []).map((l) => ({ name: cleanName(l.name), catno: l.catno }));
   const artist = joinArtists(r.artists) || cleanName(r.artists_sort || '');
-  const community = {
-    have: r.community?.have ?? 0,
-    want: r.community?.want ?? 0,
-    ratingAvg: r.community?.rating?.average ?? null,
-    ratingCount: r.community?.rating?.count ?? 0,
-  };
-  const sugg = market.suggestions || {};
-  const estimatedValue = sugg['VG+']?.value ?? sugg.NM?.value ?? market.lowestPrice ?? null;
-
   return {
     id: r.id,
     schemaVersion: 1,
@@ -287,11 +270,59 @@ export async function fetchRelease(id) {
     thumbUrl: primary?.uri150 || r.thumb || '',
     discogsUrl: r.uri || `https://www.discogs.com/release/${r.id}`,
     masterId: r.master_id || null,
-    community,
-    market,
-    rarity: computeRarity({ have: community.have, want: community.want, numForSale: market.numForSale }),
-    estimatedValue,
+    community: {
+      have: r.community?.have ?? 0,
+      want: r.community?.want ?? 0,
+      ratingAvg: r.community?.rating?.average ?? null,
+      ratingCount: r.community?.rating?.count ?? 0,
+    },
+    basicFetchedAt: Date.now(),
   };
+}
+
+/** Récupère la fiche complète + les prix (3 requêtes), et calcule la rareté. */
+export async function fetchRelease(id) {
+  const [r, market] = await Promise.all([request(`/releases/${id}`), fetchMarket(id)]);
+  if (market.numForSale === undefined) market.numForSale = r.num_for_sale ?? 0;
+  if (market.lowestPrice === undefined) {
+    // Secours : le prix de la fiche Discogs est toujours en dollars.
+    market.lowestPrice = r.lowest_price ?? null;
+    market.currency = 'USD';
+  }
+  const release = mapRelease(r);
+  return {
+    ...release,
+    market,
+    rarity: computeRarity({ have: release.community.have, want: release.community.want, numForSale: market.numForSale }),
+    detailFetchedAt: Date.now(),
+  };
+}
+
+/** Fiche sans les prix (1 requête) : pochette, titres, genres, chiffres communauté. */
+export async function fetchReleaseBasic(id) {
+  return mapRelease(await request(`/releases/${id}`));
+}
+
+/** Prix le plus bas actuel en euros + nombre en vente (1 requête). */
+export async function fetchStats(id) {
+  const s = await request(`/marketplace/stats/${id}`, { curr_abbr: CURRENCY });
+  return {
+    lowestPrice: s.lowest_price?.value ?? null,
+    currency: s.lowest_price?.currency || CURRENCY,
+    numForSale: s.num_for_sale ?? 0,
+    blockedFromSale: !!s.blocked_from_sale,
+  };
+}
+
+/** Catégorie de format simple et stable, ex. 'Vinyl 12"', 'Vinyl 7"', 'Box Set'. */
+export function formatCategory(formats = []) {
+  if (!formats.length) return '';
+  const all = formats.flatMap((f) => [f.name, ...(f.descriptions || [])]);
+  if (all.includes('Box Set')) return 'Box Set';
+  const f = formats[0];
+  const d = f.descriptions || [];
+  const size = ['12"', '10"', '7"'].find((x) => d.includes(x)) || (d.includes('LP') ? '12"' : '');
+  return size ? `${f.name} ${size}` : f.name;
 }
 
 /** Vérifie le jeton : renvoie le nom d'utilisateur Discogs. */

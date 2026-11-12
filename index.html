@@ -22,6 +22,8 @@
       <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
     </button>
     <h1 id="page-title">Scanner</h1>
+    <a class="job-pill" id="job-pill" href="#/collection" hidden>Prix : <span id="job-pill-text">0 %</span></a>
+    <div class="job-line" id="job-line" hidden><span id="job-line-bar"></span></div>
   </header>
 
   <main id="main">
@@ -103,6 +105,57 @@
       </form>
     </section>
 
+    <!-- Collection -->
+    <section class="view" id="view-collection" data-title="Ma collection" hidden>
+      <div class="coll-summary">
+        <div>
+          <div class="coll-total" id="coll-total">—</div>
+          <div class="help" id="coll-count"></div>
+        </div>
+        <a class="btn ghost" href="#/stats">
+          <svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
+          Stats
+        </a>
+      </div>
+
+      <div class="card job" id="job-card">
+        <div class="job-head">
+          <div>
+            <strong>Prix Discogs</strong>
+            <div class="help" id="job-text">Jamais mis à jour.</div>
+          </div>
+          <button class="btn primary" id="job-btn">Actualiser les prix</button>
+        </div>
+        <div class="progress" id="job-progress" hidden>
+          <div class="bar"><span id="job-bar"></span></div>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <input type="search" id="coll-search" placeholder="Rechercher : artiste, titre, label, n° cat." autocomplete="off">
+        <div class="selects">
+          <select id="coll-sort" aria-label="Trier"></select>
+          <select id="coll-genre" aria-label="Filtrer par genre"></select>
+          <select id="coll-format" aria-label="Filtrer par format"></select>
+          <select id="coll-shelf" aria-label="Filtrer par étagère"></select>
+        </div>
+        <button class="linklike" id="coll-reset" hidden>Effacer les filtres</button>
+      </div>
+
+      <p class="summary" id="coll-shown"></p>
+      <ul class="list" id="coll-list"></ul>
+      <div class="empty" id="coll-empty" hidden>
+        <svg viewBox="0 0 24 24" class="big-icon"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></svg>
+        <p>Ta collection est vide.</p>
+        <p class="help">Ouvre la fiche d'un vinyle et touche « Ajouter à ma collection », ou importe ton export Record Scanner dans <a href="#/settings">Réglages</a>.</p>
+      </div>
+    </section>
+
+    <!-- Statistiques -->
+    <section class="view" id="view-stats" data-title="Statistiques" hidden>
+      <div id="stats-content"></div>
+    </section>
+
     <!-- 7. Historique -->
     <section class="view" id="view-history" data-title="Historique" hidden>
       <ul class="list" id="history-list"></ul>
@@ -130,9 +183,25 @@
       </form>
 
       <div class="card">
-        <h2>Mes données</h2>
+        <h2>Importer depuis Record Scanner</h2>
+        <p class="help">Dans Record Scanner, exporte ta collection en CSV, puis choisis le fichier ici. Il est lu sur ce téléphone et n'est envoyé nulle part. Tu peux réimporter sans créer de doublons.</p>
+        <label class="btn primary block">
+          Choisir le fichier CSV
+          <input type="file" accept=".csv,text/csv,text/comma-separated-values,application/vnd.ms-excel,text/plain" id="rs-file" hidden>
+        </label>
+        <div class="import-result" id="rs-result" hidden></div>
+      </div>
+
+      <div class="card">
+        <h2>Sauvegarde</h2>
         <p class="help" id="data-stats">…</p>
-        <button class="btn ghost block" id="export-btn">Exporter une sauvegarde (JSON)</button>
+        <button class="btn ghost block" id="export-csv-btn">Exporter la collection (CSV pour Excel)</button>
+        <button class="btn ghost block" id="export-btn">Sauvegarde complète (JSON)</button>
+        <label class="btn ghost block">
+          Restaurer une sauvegarde JSON
+          <input type="file" accept=".json,application/json" id="restore-file" hidden>
+        </label>
+        <p class="status" id="backup-status" role="status"></p>
       </div>
 
       <div class="card guide">
@@ -155,12 +224,18 @@
           <p>Onglet <strong>Photo</strong> → prends le numéro en photo, de près. Le téléphone lit le texte (la 1<sup>re</sup> fois, il télécharge ~5 Mo). Touche le numéro proposé ou corrige le texte, puis « Rechercher ».</p>
         </details>
         <details>
+          <summary>Gérer ma collection</summary>
+          <p>Sur la fiche d'un vinyle : « Ajouter à ma collection ». Tu peux ensuite y indiquer l'état, la quantité, l'étagère et une note, ou retirer le disque.</p>
+          <p>Onglet <strong>Collection</strong> : recherche, tris et filtres (genre, format, étagère). « Stats » affiche la valeur totale, le top 10 et la répartition par genre et par décennie.</p>
+          <p>« Actualiser les prix » met à jour le prix le plus bas Discogs de chaque disque. C'est long (environ 1 disque par seconde) : tu peux continuer à utiliser l'appli, mettre en pause et reprendre plus tard. Garde l'appli ouverte.</p>
+        </details>
+        <details>
           <summary>Comprendre les prix et la rareté</summary>
           <p>Les prix viennent de la place de marché Discogs, en euros. Les « prix suggérés par état » ne sont fournis par Discogs que si tu as rempli tes <a href="https://www.discogs.com/settings/seller/" target="_blank" rel="noopener">paramètres vendeur</a> (devise : EUR).</p>
           <p>La rareté combine : combien de membres l'ont, combien le recherchent, et combien d'exemplaires sont en vente.</p>
         </details>
       </div>
-      <p class="help center" id="app-version">Vinyl Scanner · v1.0.0 · données Discogs</p>
+      <p class="help center" id="app-version">Vinyl Scanner · v1.1.0 · données Discogs</p>
     </section>
 
     <!-- 4. Résultats multiples -->
@@ -195,6 +270,10 @@
       <svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
       <span>Photo</span>
     </a>
+    <a href="#/collection" data-tab="collection">
+      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="4" height="16" rx="1"/><rect x="9" y="4" width="4" height="16" rx="1"/><path d="M15.5 5.2l3.8-1 3.2 15.3-3.8 1z"/></svg>
+      <span>Collection</span>
+    </a>
     <a href="#/history" data-tab="history">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
       <span>Historique</span>
@@ -208,6 +287,7 @@
   <div class="toast" id="toast" role="alert" hidden></div>
 
   <script src="vendor/html5-qrcode.min.js"></script>
+  <script src="vendor/papaparse.min.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

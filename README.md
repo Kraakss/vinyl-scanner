@@ -31,7 +31,28 @@ Le jeton reste uniquement sur ton téléphone (il n'est jamais dans le code ni s
 
 S'il y a plusieurs pressages, une liste (pochette, pays, année, label, format) te permet de choisir le bon.
 
-### 4. Lire la fiche
+### 4. Importer ta collection Record Scanner
+1. Dans Record Scanner, exporte ta collection en CSV et enregistre le fichier sur le téléphone (Fichiers / Téléchargements).
+2. Dans l'appli : **Réglages → Importer depuis Record Scanner → Choisir le fichier CSV**.
+3. Un résumé s'affiche : X importés, X doublons, X erreurs.
+
+Le fichier est lu sur le téléphone et n'est envoyé nulle part (ni sur GitHub, ni ailleurs). Tu peux réimporter un export plus récent : les disques déjà présents ne sont pas dupliqués, et tes notes et états ne sont pas écrasés. Un même disque présent deux fois devient un seul disque avec une quantité de 2.
+
+### 5. Ma collection
+- **Onglet Collection** : la liste de tes disques avec la valeur totale. Tu peux chercher (artiste, titre, label, n° de catalogue), trier (valeur, artiste, titre, année, date d'ajout) et filtrer (genre, format, étagère).
+- **Sur la fiche d'un vinyle** : « Ajouter à ma collection ». Une fois le disque dans ta collection, tu peux indiquer l'état du disque et de la pochette, l'étagère, la quantité, une note perso, ou le retirer.
+- **Stats** (bouton en haut de la collection) : nombre de vinyles, valeur totale et moyenne, top 10 des plus chers, répartition par genre et par décennie.
+- **Actualiser les prix** : va chercher le prix le plus bas actuel sur Discogs (en €) et les pochettes de toute la collection. Discogs limite à 60 requêtes par minute : compte environ **20 minutes la première fois** pour 470 disques (il faut aussi récupérer les pochettes), puis environ 10 minutes les fois suivantes. Pendant ce temps, tu peux utiliser l'appli normalement, mais garde-la ouverte. **Pause** / **Reprendre** à tout moment : si l'appli est fermée, elle reprend là où elle s'était arrêtée. Chaque disque affiche l'écart avec son ancienne valeur (▲ / ▼).
+
+La valeur d'un disque, c'est d'abord le prix de Record Scanner, puis le prix le plus bas en vente sur Discogs après chaque actualisation. Si aucun exemplaire n'est en vente, l'ancienne valeur est conservée.
+
+### 6. Sauvegarder
+Dans **Réglages → Sauvegarde** :
+- **Exporter la collection (CSV pour Excel)** : un tableau lisible dans Excel.
+- **Sauvegarde complète (JSON)** : à garder en lieu sûr (Google Drive, e-mail…).
+- **Restaurer une sauvegarde JSON** : pour tout récupérer, par exemple sur un nouveau téléphone.
+
+### 7. Lire la fiche
 - **Prix le plus bas actuel**, **nombre en vente**, **nombre de membres qui l'ont / le recherchent**.
 - **Rareté** : Commun / Peu courant / Rare, calculée à partir de ces chiffres (règles dans `js/rarity.js`).
 - **Actualiser les prix** : les fiches sont gardées 12 h, ce bouton force une mise à jour.
@@ -54,8 +75,11 @@ GitHub Pages republie tout seul en 1 à 2 minutes. Sur le téléphone, ferme et 
 | `js/discogs.js` | Appels à l'API Discogs (jeton, limite de 60 requêtes/min, relance si 429) |
 | `js/db.js` | Stockage IndexedDB (fiches + historique), prêt pour la future collection |
 | `js/scanner.js` | Lecture code-barres (html5-qrcode, dans `vendor/`) |
+| `vendor/papaparse.min.js` | Lecture des fichiers CSV (PapaParse) |
 | `js/ocr.js` | Lecture de texte (Tesseract.js, chargé à la demande) |
 | `js/rarity.js` | Calcul de la rareté |
+| `js/collection.js` | Import Record Scanner, tris, filtres, statistiques, export CSV |
+| `js/refresh.js` | Mise à jour des prix de la collection en tâche de fond (reprise possible) |
 | `sw.js`, `manifest.webmanifest`, `icons/` | Installation et fonctionnement hors ligne |
 
 Pas de serveur ni de proxy : l'API Discogs autorise les appels directs depuis le navigateur (CORS).

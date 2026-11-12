@@ -49,13 +49,17 @@ L'écran d'**Accueil** affiche les 4 collections. Chaque bloc a son bouton **Sca
 - **Fiche** : format (DVD, Blu-ray, 4K, 3D, VHS), édition, état → **Ajouter**.
 - **Stats** : nombre, répartition par format, par genre et par décennie.
 
-### Disney (Grands Classiques)
-- **Classiques** : la grille numérotée. En couleur et en surbrillance ceux que tu as, grisés avec un cadenas ceux qui manquent, « À venir » pour les prochains. En haut : compteur « X / total », barre de progression et filtre **Tous / Possédés / Manquants**.
-- **Fiche** (toucher une vignette) : **Je l'ai** / **Je ne l'ai plus**, format, édition, état, note.
-- **Scanner** (scan en série, la caméra reste allumée) :
-  - code déjà connu → réponse immédiate « **Vous l'avez déjà (n°X)** » ou « **Vous ne l'avez pas — Ajouter** » (un toucher, avec une animation) ;
-  - code inconnu → l'appli propose le film probable d'après le titre du produit, sinon tu choisis le numéro dans la liste. Le lien code-barres → film est retenu pour la suite.
-- **Nouveau Classique** : voir [Mettre à jour la liste Disney](#mettre-à-jour-la-liste-disney).
+### Disney (numérotation officielle française)
+- **Classiques** : les films dans l'ordre de la **numérotation officielle française**. C'est le numéro sur la tranche des DVD, créé par Disney France : 141 films, Grands Classiques, Pixar, suites et autres. En dessous, la section **Hors numérotation** regroupe 23 autres films d'animation Disney (Fée Clochette spéciaux, Mickey Noël, Stitch, Frankenweenie…), par date.
+- **Affichage** :
+  - en couleur et en surbrillance, les films que tu as ;
+  - grisés avec un cadenas, ceux qui manquent ;
+  - « À venir », les films pas encore sortis ;
+  - un « ? » orange, un numéro encore à confirmer.
+- **En haut** : un compteur « X / total » pour chaque section, les filtres **Tous / Possédés / Manquants**, le **type** (Classiques, Pixar, Suites, Autres, Hors numérotation) et la **recherche** par titre (français ou original) ou par numéro.
+- **Fiche** : **Je l'ai** / **Je ne l'ai plus**, format, édition, état, note.
+- **Scanner** (en série, la caméra reste allumée) : un code déjà connu donne une réponse immédiate. Un code inconnu fait proposer le film probable (suites comprises : *Le Roi Lion 2* ≠ *Le Roi Lion*), sinon tu choisis dans la liste. Le code est ensuite mémorisé.
+- **Affiches** : quand le serveur est configuré, elles sont récupérées automatiquement sur TMDB puis gardées sur le téléphone, ce qui permet de les afficher hors ligne.
 
 ### Sauvegardes (Réglages → Sauvegarde)
 - Pour chaque collection : **CSV** (tableau Excel) et **JSON** (sauvegarde à restaurer).
@@ -125,13 +129,23 @@ Dans l'appli : **Réglages → Serveur des jeux, DVD et Disney** → colle l'adr
 ---
 
 ## Mettre à jour la liste Disney
-La liste est dans `data/disney-classiques.json`. Quand un nouveau Grand Classique sort :
-1. Sur GitHub, ouvre le fichier → crayon ✏️.
-2. Copie la dernière ligne et colle-la en dessous. Mets une virgule à la fin de l'avant-dernière ligne.
-3. Change `n` (numéro suivant), `titre`, `annee`, `en` (titre anglais) et `sortie` (date de sortie en France, `AAAA-MM-JJ`).
-4. **Commit changes**. Un film dont la date de sortie n'est pas passée s'affiche « À venir » et n'est pas compté.
+La liste est dans `data/disney-classiques.json`, une ligne par film :
+```
+{"n": 38, "id": "le-roi-lion", "titre": "Le Roi lion", "annee": 1994, "type": "classique", "en": "The Lion King"}
+```
+- **Nouveau film numéroté** : sur GitHub, ouvre le fichier → crayon ✏️ → copie la dernière ligne de `numerotes` et change `n`, `id` (unique : minuscules et tirets), `titre`, `annee`, `type` (`classique`, `pixar`, `suite` ou `autre`), `en` (titre original). Pour un film pas encore sorti, ajoute `"sortie": "AAAA-MM-JJ"` : il reste « À venir » jusqu'à cette date. Si un numéro est encore incertain, ajoute `"incertain": "explication"`.
+- **Corriger un numéro** : change seulement `n`. Ne change **jamais** `id` : c'est lui qui relie tes DVD possédés et tes codes-barres.
+- **Film hors numérotation** : même chose dans `horsNumerotation`, sans `n`.
 
-La liste actuelle compte 64 Classiques (n°1 *Blanche-Neige* → n°64 *Zootopie 2*). Le n°65, *Billie : À la croisée des mondes* (*Hexed*), sort le 25 novembre 2026 : il sera compté automatiquement à partir de cette date.
+**Sources de la numérotation** (recoupées le 12/11/2026) :
+- [lesgrandsclassiques.fr](https://www.lesgrandsclassiques.fr/liste.php), [dvd-disney.com](https://www.dvd-disney.com/classiques/) et [michael-lefevre.fr](https://www.michael-lefevre.fr/blog/liste-complete-des-grands-classiques-disney-numerotes-001-a-138-le-guide-du-collectionneur-dvd-blu-ray.html) sont identiques du n°1 au n°138.
+- [Disney Magie](https://disneymagie.fr/envrac/liste_films.php) est identique du n°1 au n°136.
+- [Coleka](https://www.coleka.com/fr/dvd_t19216) confirme les numéros vérifiés.
+
+**Numéros à confirmer** :
+- n°137 *Elio* et n°138 *Zootopie 2* : 3 sources contre 1.
+- n°139 *Jumpers* et n°140 *Toy Story 5* : une seule source.
+- n°141 *Billie : À la croisée des mondes* : provisoire, le film sort le 25/11/2026.
 
 ## Désactiver le scan du n° en direct
 Si le scan en direct fonctionne mal sur ton téléphone, ouvre `js/config.js` et mets `LIVE_CATNO = false`. La saisie manuelle et le mode photo restent disponibles. Le code de cette fonction est isolé dans `js/livecatno.js`.
@@ -155,7 +169,7 @@ GitHub Pages republie en 1 à 2 minutes. Sur le téléphone, ferme puis rouvre l
 | `js/core/job.js` | Tâches de fond avec reprise (mise à jour des prix des jeux) |
 | `js/games.js`, `js/games-pricing.js` | Jeux vidéo : IGDB, plateformes, estimation eBay |
 | `js/dvd.js` | DVD : TMDB |
-| `js/disney.js`, `data/disney-classiques.json` | Grands Classiques Disney |
+| `js/disney.js`, `js/disney-legacy.js`, `data/disney-classiques.json` | Disney : numérotation officielle française + hors numérotation |
 | `js/livecatno.js`, `js/config.js` | Scan du n° de catalogue en direct (désactivable) |
 | `js/discogs.js`, `js/collection.js`, `js/refresh.js`, `js/rarity.js` | Vinyles : Discogs, collection, prix, rareté |
 | `js/db.js` | Base IndexedDB (version 2) |
@@ -165,7 +179,7 @@ GitHub Pages republie en 1 à 2 minutes. Sur le téléphone, ferme puis rouvre l
 ### Données (IndexedDB `vinyl-scanner`, version 2)
 - `releases` + `history` : vinyles et historique. Ils sont **inchangés** depuis la v1.
 - `items` : jeux et DVD.
-- `disney` : Classiques possédés.
+- `disney` : films Disney possédés (clé = identifiant texte du film depuis la v2.1 ; les anciennes données ont été rattachées automatiquement, avec une copie de sécurité `disney-avant-v2.1`).
 - `barcodes` : codes-barres mémorisés.
 - `meta` : cache des affiches.
 - `snapshots` : copie de sécurité faite au passage en v2.

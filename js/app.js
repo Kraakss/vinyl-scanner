@@ -9,7 +9,7 @@ import * as refresh from './refresh.js';
 import * as backend from './core/backend.js';
 import { games, priceJob, gamesCsv } from './games.js';
 import { dvd, dvdCsv } from './dvd.js';
-import { disney, disneyCsv } from './disney.js';
+import { disney, disneyCsv, migrateLegacy as migrateDisney, fetchMissingPosters as fetchDisneyPosters } from './disney.js';
 import { LIVE_CATNO, APP_VERSION } from './config.js';
 
 const CACHE_MAX_AGE = 12 * 60 * 60 * 1000; // une fiche de moins de 12 h n'est pas re-téléchargée
@@ -163,7 +163,7 @@ async function renderHome() {
   const [g, d, dn] = await Promise.all([games.summary(), dvd.summary(), disney.summary()]);
   $('#home-games').textContent = g.count ? `${num(g.count)} jeu${g.count > 1 ? 'x' : ''} · ${money(g.total)}` : 'Aucun jeu pour l\'instant';
   $('#home-dvd').textContent = d.count ? `${num(d.count)} film${d.count > 1 ? 's' : ''}` : 'Aucun film pour l\'instant';
-  $('#home-disney').textContent = dn.total ? `${num(dn.have)} / ${num(dn.total)} Grands Classiques` : 'Grands Classiques';
+  $('#home-disney').textContent = dn.total ? `${num(dn.have)} / ${num(dn.total)} numérotés · ${num(dn.haveHors)} / ${num(dn.totalHors)} hors n°` : 'Classiques Disney';
   $('#home-disney-bar').style.width = `${dn.total ? (dn.have / dn.total) * 100 : 0}%`;
   $('#home-worker-banner').hidden = backend.isConfigured();
 }
@@ -1086,11 +1086,12 @@ $('#restore-file').addEventListener('change', async (e) => {
     let data;
     try { data = JSON.parse(await file.text()); } catch { throw new Error('Ce fichier n\'est pas un JSON valide.'); }
     const res = await db.importBackup(data);
+    await migrateDisney().catch(() => {}); // ancienne sauvegarde Disney (v2.0) : rattachement à la nouvelle liste
     const parts = [];
     if (res.releases) parts.push(`${num(res.releases)} fiches vinyles (dont ${num(res.inCollection)} en collection)`);
     if (res.games) parts.push(`${num(res.games)} jeux`);
     if (res.dvds) parts.push(`${num(res.dvds)} DVD`);
-    if (res.disney) parts.push(`${num(res.disney)} Classiques Disney`);
+    if (res.disney) parts.push(`${num(res.disney)} films Disney`);
     setStatus(status, `✓ Restauré : ${parts.join(', ') || 'rien à restaurer'}.`, 'ok');
     renderSettingsStats();
   } catch (err) {
@@ -1104,7 +1105,7 @@ async function renderSettingsStats() {
   try {
     const [n, items, g, d, dn] = await Promise.all([db.countReleases(), db.getCollection(), games.summary(), dvd.summary(), disney.summary()]);
     const discs = items.reduce((s, r) => s + coll.quantityOf(r), 0);
-    $('#data-stats').textContent = `Sur ce téléphone : ${num(discs)} vinyle${discs > 1 ? 's' : ''} (${num(n)} fiches), ${num(g.count)} jeu${g.count > 1 ? 'x' : ''}, ${num(d.count)} DVD, ${num(dn.have)} Classiques Disney.`;
+    $('#data-stats').textContent = `Sur ce téléphone : ${num(discs)} vinyle${discs > 1 ? 's' : ''} (${num(n)} fiches), ${num(g.count)} jeu${g.count > 1 ? 'x' : ''}, ${num(d.count)} DVD, ${num(dn.have + dn.haveHors)} films Disney.`;
   } catch {
     $('#data-stats').textContent = 'Stockage local indisponible (navigation privée ?).';
   }
@@ -1149,6 +1150,7 @@ $('#worker-form').addEventListener('submit', async (e) => {
     + checkLine(!ebayErr, 'eBay — prix des jeux', `${ebayErr} (EBAY_CLIENT_ID et EBAY_CLIENT_SECRET)`)
     + checkLine(!tmdbErr, 'TMDB — DVD et affiches Disney', `${tmdbErr} (TMDB_TOKEN)`);
   if (!igdbErr && !ebayErr && !tmdbErr) toast('Serveur prêt : tout fonctionne !');
+  if (!tmdbErr) fetchDisneyPosters(); // affiches Disney récupérées en arrière-plan
 });
 
 // ---------- Sauvegardes par collection ----------
@@ -1246,3 +1248,5 @@ route();
 renderJob(refresh.getState());
 // Récupère tranquillement les pochettes / masters manquants quelques secondes après l'ouverture.
 setTimeout(() => refresh.startBackgroundFill(), 4000);
+// Affiches Disney manquantes (si le serveur est configuré), gardées en cache sur le téléphone
+setTimeout(() => fetchDisneyPosters(), 8000);

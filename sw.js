@@ -3,7 +3,9 @@
 // sur GitHub Pages est prise en compte dès la prochaine ouverture avec du réseau.
 // Les appels à l'API Discogs ne sont jamais mis en cache ici.
 
-const CACHE = 'vinyl-scanner-v4';
+const CACHE = 'vinyl-scanner-v5';
+// Affiches TMDB (Disney, DVD) : cache séparé, conservé d'une version à l'autre
+const IMAGES = 'vinyl-scanner-images';
 const ASSETS = [
   './',
   './index.html',
@@ -25,6 +27,7 @@ const ASSETS = [
   './js/games-pricing.js',
   './js/dvd.js',
   './js/disney.js',
+  './js/disney-legacy.js',
   './js/livecatno.js',
   './data/disney-classiques.json',
   './vendor/html5-qrcode.min.js',
@@ -41,7 +44,7 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== IMAGES).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
 });
@@ -49,6 +52,21 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
+  // Affiches TMDB : servies depuis le téléphone si déjà téléchargées (fonctionne hors ligne)
+  if (req.method === 'GET' && url.hostname === 'image.tmdb.org') {
+    event.respondWith(caches.open(IMAGES).then(async (cache) => {
+      const hit = await cache.match(url.href);
+      if (hit) return hit;
+      try {
+        const res = await fetch(url.href, { mode: 'cors' });
+        if (res.ok) cache.put(url.href, res.clone());
+        return res;
+      } catch {
+        return fetch(req); // dernier recours
+      }
+    }));
+    return;
+  }
   if (req.method !== 'GET' || url.origin !== self.location.origin) return; // Discogs, CDN… : pas d'interception
 
   // « no-cache » : on demande toujours au serveur si le fichier a changé (réponse 304

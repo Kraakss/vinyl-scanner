@@ -40,6 +40,8 @@
 //        price: { median, low, high, count, basis, fetchedAt, … } (jeux), manualValue, estimatedValue, valueInfo,
 //        barcodes: [], firstSeenAt, lastSeenAt, detailFetchedAt }
 //  • disney    (clé : num) → { num, owned: 0|1, format, edition, condition, notes, addedAt, barcodes: [] }
+//      Depuis la v2.1, « num » contient l'identifiant texte du film (ex. 'le-roi-lion'),
+//      qui ne change jamais même si le numéro officiel du film est corrigé.
 //  • barcodes  (clé : code) → lien code-barres → objet : { code, kind, ref, title, at }
 //  • meta      (clé : key) → petites données diverses (affiches Disney en cache…)
 //  • snapshots (clé : id)  → copie de sécurité des vinyles faite automatiquement avant la migration
@@ -319,8 +321,8 @@ export async function importBackup(data) {
     .map(({ id, ...h }) => h); // nouvel identifiant attribué automatiquement
   const items = (data.items || []).filter((i) => i && typeof i.key === 'string' && ['game', 'dvd'].includes(i.kind))
     .map((i) => ({ ...i, inCollection: i.inCollection ? 1 : 0 }));
-  const disney = (data.disney || []).filter((d) => d && Number.isFinite(Number(d.num)))
-    .map((d) => ({ ...d, num: Number(d.num), owned: d.owned ? 1 : 0 }));
+  const disney = (data.disney || []).filter((d) => d && (typeof d.num === 'string' ? d.num : Number.isFinite(Number(d.num))))
+    .map((d) => ({ ...d, num: disneyKey(d.num), owned: d.owned ? 1 : 0 }));
   const barcodes = (data.barcodes || []).filter((b) => b && typeof b.code === 'string' && b.kind);
 
   const db = await open();
@@ -385,15 +387,69 @@ export async function getDisneyAll() {
   return reqToPromise((await store('disney')).getAll());
 }
 
+/** Clé d'un film Disney : identifiant texte (v2.1) ou ancien numéro (v2.0). */
+export const disneyKey = (k) => (typeof k === 'number' || /^\d+$/.test(String(k)) ? Number(k) : String(k));
+
 export async function updateDisney(num, mutator) {
+  const key = disneyKey(num);
   const db = await open();
   const tx = db.transaction('disney', 'readwrite');
   const s = tx.objectStore('disney');
   let result = null;
-  const get = s.get(Number(num));
+  const get = s.get(key);
   get.onsuccess = () => {
-    const next = mutator(get.result ? structuredClone(get.result) : { num: Number(num), owned: 0, barcodes: [] });
+    const next = mutator(get.result ? structuredClone(get.result) : { num: key, id: key, owned: 0, barcodes: [] });
     if (next) { result = next; s.put(next); } else { result = get.result || null; }
+  };
+  await txDone(tx);
+  return result;
+}
+
+/**
+ * Migration Disney v2.0 → v2.1 : les films étaient rangés sous leur numéro de la
+ * liste Wikipédia (1 à 65) ; ils sont maintenant rangés sous un identifiant texte.
+ * mapOld(numéro) → identifiant. Tout se fait dans UNE transaction (tout ou rien),
+ * après une copie de sécurité. Renvoie le nombre de fiches et de codes déplacés.
+ */
+export async function migrateDisneyKeys(mapOld) {
+  const db = await open();
+  const tx = db.transaction(['disney', 'barcodes', 'snapshots'], 'readwrite');
+  const ds = tx.objectStore('disney');
+  const bs = tx.objectStore('barcodes');
+  const result = { films: 0, barcodes: 0, unknown: [] };
+  const allD = ds.getAll();
+  allD.onsuccess = () => {
+    const legacy = allD.result.filter((d) => typeof d.num === 'number');
+    const allB = bs.getAll();
+    allB.onsuccess = () => {
+      const legacyB = allB.result.filter((b) => b.kind === 'disney' && typeof b.ref === 'number');
+      if (!legacy.length && !legacyB.length) return;
+      tx.objectStore('snapshots').put({ id: 'disney-avant-v2.1', createdAt: Date.now(), disney: allD.result, barcodes: allB.result.filter((b) => b.kind === 'disney') });
+      const byKey = new Map(allD.result.map((d) => [d.num, d]));
+      for (const d of legacy) {
+        const id = mapOld(d.num);
+        if (!id) { result.unknown.push(d.num); continue; } // gardé tel quel, rien n'est perdu
+        const cur = byKey.get(id);
+        const merged = cur
+          ? { ...d, ...cur, owned: cur.owned || d.owned ? 1 : 0, addedAt: cur.addedAt || d.addedAt || null,
+            barcodes: [...new Set([...(cur.barcodes || []), ...(d.barcodes || [])])],
+            format: cur.format || d.format, edition: cur.edition || d.edition, condition: cur.condition || d.condition, notes: cur.notes || d.notes }
+          : { ...d };
+        merged.num = id;
+        merged.id = id;
+        merged.legacyNum = d.num;
+        byKey.set(id, merged);
+        ds.put(merged);
+        ds.delete(d.num);
+        result.films += 1;
+      }
+      for (const b of legacyB) {
+        const id = mapOld(b.ref);
+        if (!id) continue;
+        bs.put({ ...b, ref: id, legacyRef: b.ref });
+        result.barcodes += 1;
+      }
+    };
   };
   await txDone(tx);
   return result;

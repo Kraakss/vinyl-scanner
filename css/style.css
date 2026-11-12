@@ -509,3 +509,20 @@ code { background: var(--surface-2); padding: 1px 5px; border-radius: 5px; font-
 .reader { width: 100%; }
 .reader video { display: block; width: 100% !important; height: auto !important; }
 .reader * { max-width: 100%; }
+
+/* v2.1 : Disney (numérotation officielle + hors numérotation) */
+.dsec + .dsec { margin-top: 12px; }
+.dsec-t { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: .92rem; }
+.dsec-t span { color: var(--c-disney); font-weight: 800; font-size: 1.15rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dsec .progress { margin: 6px 0 0; }
+.dsec .progress .bar span { background: var(--c-disney); }
+.dgrid-title { font-size: .95rem; margin: 18px 0 10px; color: var(--muted); }
+.dnum.unsure { background: rgba(243, 140, 40, .9); }
+.dnum.year { font-weight: 700; font-size: .68rem; background: rgba(0, 0, 0, .6); }
+.note-unsure { background: rgba(243, 140, 40, .1); border: 1px solid rgba(243, 140, 40, .4); border-radius: 10px; padding: 8px 10px; margin: 0 0 12px; color: #ffd8b0; }
+.dhead + .toolbar { margin-top: 2px; }
+.selects .seg.dfilter { justify-content: space-between; min-width: 0; }
+.selects .seg.dfilter button { flex: 1; padding: 6px 4px; }
+#view-disney-grid .selects { grid-template-columns: minmax(0, 1fr); }
+#view-disney-grid .seg.dfilter { display: flex; width: 100%; }
+#view-disney-grid .seg.dfilter button { flex: 1 1 0; min-width: 0; flex-shrink: 1; justify-content: center; }

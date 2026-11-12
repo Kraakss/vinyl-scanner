@@ -66,11 +66,26 @@ async function collectionTotal() {
   return items.reduce((sum, r) => sum + (valueOf(r) ?? 0) * quantityOf(r), 0);
 }
 
+/**
+ * Ajoute à un disque les infos de sa fiche Discogs (pochette, master, titres…).
+ * La collection, la valeur et les prix déjà connus sont conservés.
+ */
+function applyBasic(rec, basic) {
+  const keep = { collection: rec.collection, inCollection: rec.inCollection, estimatedValue: rec.estimatedValue,
+    valueInfo: rec.valueInfo, firstSeenAt: rec.firstSeenAt, lastSeenAt: rec.lastSeenAt, viewCount: rec.viewCount,
+    market: rec.market, detailFetchedAt: rec.detailFetchedAt, rarity: rec.rarity };
+  const out = { ...rec, ...basic, ...keep };
+  delete out.basicFetchFailedAt;
+  if (out.collection && !out.collection.format) out.collection.format = api.formatCategory(basic.formats);
+  return out;
+}
+
 /** Met à jour un disque. Renvoie le nombre de requêtes faites. */
 async function refreshOne(id) {
   const current = await db.getRelease(id);
   if (!current || !current.inCollection) return 0;
-  const needsDetails = !current.basicFetchedAt || !current.coverUrl;
+  // Fiche Discogs à récupérer si : jamais lue, pas de pochette, ou master inconnu.
+  const needsDetails = !current.basicFetchedAt || !current.coverUrl || current.masterId === undefined;
   const [stats, basic] = await Promise.all([
     api.fetchStats(id),
     needsDetails ? api.fetchReleaseBasic(id).catch((e) => { if (e.status === 401 || !e.status) throw e; return null; }) : null,
@@ -78,14 +93,7 @@ async function refreshOne(id) {
   const now = Date.now();
   await db.updateRelease(id, (rec) => {
     if (!rec) return null;
-    if (basic) {
-      // Les infos Discogs remplacent les infos importées, mais la collection et la valeur restent.
-      const keep = { collection: rec.collection, inCollection: rec.inCollection, estimatedValue: rec.estimatedValue,
-        valueInfo: rec.valueInfo, firstSeenAt: rec.firstSeenAt, lastSeenAt: rec.lastSeenAt, viewCount: rec.viewCount,
-        market: rec.market, detailFetchedAt: rec.detailFetchedAt };
-      rec = { ...rec, ...basic, ...keep };
-      if (!rec.collection.format) rec.collection.format = api.formatCategory(basic.formats);
-    }
+    if (basic) rec = applyBasic(rec, basic);
     rec.market = { ...(rec.market || {}), ...stats, fetchedAt: now };
     if (rec.community) {
       rec.rarity = computeRarity({ have: rec.community.have, want: rec.community.want, numForSale: stats.numForSale });
@@ -170,3 +178,63 @@ export async function start({ resume = true } = {}) {
 export function pause() {
   if (running) stopRequested = true;
 }
+
+// ---------- Récupération en arrière-plan des infos Discogs manquantes ----------
+// Les disques importés de Record Scanner n'ont ni pochette ni "master" Discogs
+// (identifiant commun à toutes les versions d'un même album, utile pour savoir
+// si on possède déjà un album dans une autre version). On les récupère tout
+// doucement (30 requêtes/min max), seulement quand l'appli est affichée, et
+// on s'efface pendant « Actualiser les prix » qui fait le même travail.
+
+const FILL_MS = 2000;
+let fill = { running: false, done: 0, total: 0, stop: false };
+
+export const getFillState = () => ({ running: fill.running, done: fill.done, total: fill.total });
+export const needsBasic = (r) => !r.basicFetchedAt && !r.basicFetchFailedAt;
+
+function waitVisible() {
+  return new Promise((resolve) => {
+    if (document.visibilityState === 'visible') { resolve(); return; }
+    const on = () => {
+      if (document.visibilityState === 'visible') { document.removeEventListener('visibilitychange', on); resolve(); }
+    };
+    document.addEventListener('visibilitychange', on);
+  });
+}
+
+export async function startBackgroundFill() {
+  if (fill.running || !api.getToken()) return;
+  let todo;
+  try { todo = (await db.getCollection()).filter(needsBasic).map((r) => r.id); } catch { return; }
+  if (!todo.length) return;
+  fill = { running: true, done: 0, total: todo.length, stop: false };
+  emit();
+  try {
+    for (const id of todo) {
+      if (fill.stop) break;
+      while (running) await sleep(5000); // la mise à jour des prix s'en charge
+      await waitVisible();
+      const rec = await db.getRelease(id);
+      if (rec && rec.inCollection && needsBasic(rec)) {
+        try {
+          const basic = await api.fetchReleaseBasic(id);
+          await db.updateRelease(id, (x) => (x ? applyBasic(x, basic) : null));
+        } catch (e) {
+          if (e.status === 404) {
+            await db.updateRelease(id, (x) => (x ? { ...x, basicFetchFailedAt: Date.now() } : null));
+          } else {
+            break; // pas de réseau, jeton refusé ou limite atteinte : on réessaiera plus tard
+          }
+        }
+        await sleep(FILL_MS);
+      }
+      fill.done += 1;
+      emit();
+    }
+  } finally {
+    fill.running = false;
+    emit();
+  }
+}
+
+export function stopBackgroundFill() { fill.stop = true; }

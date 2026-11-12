@@ -224,6 +224,49 @@ export function prepareImport(rows, existing, now = Date.now()) {
   return { records: [...out.values()], summary };
 }
 
+// ---------- « Déjà dans ma collection ? » ----------
+
+/** Artiste + titre normalisés : sans accents, majuscules, ponctuation ni suffixe Discogs "(2)". */
+export function albumKey(artist, title) {
+  const a = String(artist || '').replace(/\s\(\d+\)/g, '').replace(/\*/g, '');
+  const key = normalize(`${a} ${title || ''}`).replace(/[^a-z0-9]+/g, ' ').trim();
+  return key;
+}
+
+/**
+ * Même album ? On compare le "master" Discogs quand les deux disques en ont un ;
+ * sinon (pas de master, ou pas encore connu) on compare artiste + titre normalisés.
+ */
+export function sameAlbum(a, b) {
+  if (a.masterId && b.masterId) return a.masterId === b.masterId;
+  const ka = albumKey(a.artist, a.title);
+  return ka.length > 0 && ka === albumKey(b.artist, b.title);
+}
+
+/** Situation d'un vinyle par rapport à la collection : 'same' | 'album' | 'none'. */
+export function ownership(release, items) {
+  const exact = items.find((r) => r.id === release.id);
+  const others = items.filter((r) => r.id !== release.id && sameAlbum(r, release));
+  if (exact) return { level: 'same', quantity: quantityOf(exact), item: exact, others };
+  if (others.length) return { level: 'album', others };
+  return { level: 'none', others: [] };
+}
+
+/** Pour une liste de versions trouvées : lesquelles je possède, et mes autres versions du même album. */
+export function ownershipForResults(results, items) {
+  const byId = new Map(items.map((r) => [r.id, r]));
+  const owned = results.filter((r) => byId.has(r.id)).map((r) => byId.get(r.id));
+  const resultIds = new Set(results.map((r) => r.id));
+  const others = items.filter((it) => !resultIds.has(it.id) && results.some((r) => sameAlbum(it, r)));
+  return { owned, others, ownedIds: new Set(owned.map((r) => r.id)), byId };
+}
+
+/** "France · 1976 · Vogue · LDY. 28047" */
+export function versionLabel(r) {
+  const catno = r.catno && r.catno !== 'none' ? r.catno : '';
+  return [r.country, r.year, r.label, catno].filter(Boolean).join(' · ') || 'Version sans détails';
+}
+
 // ---------- Valeurs ----------
 
 export const quantityOf = (r) => Math.max(1, Number(r.collection?.quantity) || 1);

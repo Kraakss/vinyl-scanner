@@ -85,6 +85,8 @@ api.setWaitListener((ms) => toast(`Limite Discogs atteinte : reprise dans ${Math
 
 const TABS = ['scan', 'catno', 'photo', 'collection', 'history', 'settings'];
 let collectionScroll = 0;
+// Fiche ouverte depuis la collection (ou les stats) : inutile d'afficher l'alerte de possession.
+let releaseFromCollection = false;
 let currentView = null;
 let searchState = null; // { result, items, label, method, query }
 let pendingSource = null; // origine de la prochaine fiche ouverte (pour l'historique)
@@ -101,6 +103,7 @@ async function route() {
   if (currentView === 'scan' && view !== 'scan') await scanner.stopCamera().then(updateCamUi);
   if (currentView === 'collection' && view !== 'collection') collectionScroll = window.scrollY;
   const backToCollection = currentView === 'release' && view === 'collection';
+  if (view === 'release' && currentView !== 'release') releaseFromCollection = ['collection', 'stats'].includes(currentView);
   currentView = view;
 
   document.querySelectorAll('.view').forEach((v) => { v.hidden = v.id !== `view-${view}`; });
@@ -288,6 +291,9 @@ $('#ocr-form').addEventListener('submit', (e) => {
 
 // ---------- 4. Liste des résultats ----------
 
+// Possession : rempli à l'affichage de la liste, utilisé aussi par « Afficher plus ».
+let resultsOwnedById = new Map();
+
 function resultItem(r) {
   const meta = [
     r.country && `<span>${esc(r.country)}</span>`,
@@ -295,9 +301,12 @@ function resultItem(r) {
     r.label && `<span>${esc(r.label)}</span>`,
     r.catno && r.catno !== 'none' && `<span>${esc(r.catno)}</span>`,
   ].filter(Boolean).join('');
-  return `<li><a class="item" href="#/release/${r.id}" data-id="${r.id}">
+  const mine = resultsOwnedById.get(r.id);
+  const badge = mine ? `<span class="owned-badge">✓ Possédé${coll.quantityOf(mine) > 1 ? ` ×${coll.quantityOf(mine)}` : ''}</span>` : '';
+  return `<li><a class="item${mine ? ' owned' : ''}" href="#/release/${r.id}" data-id="${r.id}">
     ${thumbHtml(r.thumb)}
     <div class="item-body">
+      ${badge}
       <div class="item-title">${esc(r.title)}</div>
       <div class="item-artist">${esc(r.artist)}</div>
       <div class="item-meta">${meta}</div>
@@ -306,9 +315,32 @@ function resultItem(r) {
   </a></li>`;
 }
 
-function renderResults() {
+/** Liste cliquable de mes versions d'un album. */
+function versionsListHtml(items) {
+  return `<ul>${items.map((v) => `<li><a href="#/release/${v.id}"><span>${esc(coll.versionLabel(v))}${coll.quantityOf(v) > 1 ? ` (×${coll.quantityOf(v)})` : ''}</span></a></li>`).join('')}</ul>`;
+}
+
+/** Bandeau rouge / orange / indicateur vert. */
+function ownershipBannerHtml({ level, quantity, others }) {
+  if (level === 'same') {
+    return `<div class="own-banner same" role="alert">
+      <strong>Vous avez déjà ce vinyle (même version) — quantité : ${quantity}</strong>
+      ${others.length ? `Vous avez aussi ${others.length > 1 ? 'ces autres versions' : 'cette autre version'} :${versionsListHtml(others)}` : ''}
+    </div>`;
+  }
+  if (level === 'album') {
+    return `<div class="own-banner album" role="alert">
+      <strong>Vous avez déjà cet album, mais dans une autre version</strong>
+      ${others.length > 1 ? 'Vos versions' : 'Votre version'} :${versionsListHtml(others)}
+    </div>`;
+  }
+  return '<div class="own-pill">Pas dans votre collection</div>';
+}
+
+async function renderResults() {
   if (!searchState) {
     $('#results-summary').textContent = 'Aucune recherche en cours.';
+    $('#results-own').innerHTML = '';
     $('#results-list').innerHTML = '';
     $('#results-more').hidden = true;
     $('#results-empty').hidden = true;
@@ -320,6 +352,24 @@ function renderResults() {
   $('#results-summary').textContent = n
     ? `${num(n)} version${n > 1 ? 's' : ''} ${vinylOnly ? 'vinyle ' : ''}trouvée${n > 1 ? 's' : ''} pour ${label}. Choisis la tienne :`
     : '';
+
+  let mine = [];
+  try { mine = await db.getCollection(); } catch { /* base indisponible */ }
+  if (currentView !== 'results') return;
+  const own = coll.ownershipForResults(items, mine);
+  resultsOwnedById = new Map(own.owned.map((r) => [r.id, r]));
+  let banner = '';
+  if (items.length) {
+    if (own.owned.length) {
+      const q = own.owned.reduce((s, r) => s + coll.quantityOf(r), 0);
+      banner = ownershipBannerHtml({ level: 'same', quantity: q, others: own.others });
+    } else if (own.others.length) {
+      banner = ownershipBannerHtml({ level: 'album', others: own.others });
+    } else {
+      banner = ownershipBannerHtml({ level: 'none' });
+    }
+  }
+  $('#results-own').innerHTML = banner;
   $('#results-list').innerHTML = items.map(resultItem).join('');
   $('#results-empty').hidden = n > 0;
   $('#results-more').hidden = result.page >= result.pages;
@@ -484,6 +534,8 @@ function renderRelease(r) {
       </div>
     </div>
 
+    <div id="own-slot"></div>
+
     ${collectionCardHtml(r)}
 
     <div class="card">
@@ -521,6 +573,17 @@ function renderRelease(r) {
     openRelease(r.id, { force: true });
   });
   bindCollectionCard(r);
+  renderOwnership(r);
+}
+
+/** Compare la fiche à la collection et affiche le bandeau rouge / orange / vert. */
+async function renderOwnership(r) {
+  if (releaseFromCollection) return;
+  let mine = [];
+  try { mine = await db.getCollection(); } catch { return; }
+  const slot = $('#own-slot');
+  if (!slot || currentView !== 'release' || location.hash !== `#/release/${r.id}`) return;
+  slot.innerHTML = ownershipBannerHtml(coll.ownership(r, mine));
 }
 
 function bindCollectionCard(r) {
@@ -584,7 +647,7 @@ function bindCollectionCard(r) {
 // ---------- Collection ----------
 
 const VIEW_KEY = 'collection_view';
-let collView = { q: '', sort: 'artist', genre: '', format: '', shelf: '' };
+let collView = { q: '', sort: 'artist', genre: '', format: '', shelf: '', layout: 'list' };
 try { collView = { ...collView, ...JSON.parse(localStorage.getItem(VIEW_KEY) || '{}') }; } catch { /* rien */ }
 const saveCollView = () => { try { localStorage.setItem(VIEW_KEY, JSON.stringify(collView)); } catch { /* rien */ } };
 let collItems = [];
@@ -636,10 +699,23 @@ async function renderCollection() {
   renderJob(refresh.getState());
 }
 
+function collectionCardGridHtml(r) {
+  const v = coll.valueOf(r);
+  return `<li><a class="gcard" href="#/release/${r.id}">
+    ${thumbHtml(r.coverUrl || r.thumbUrl, 'thumb gcover')}
+    <div class="gtitle">${esc(r.title)}</div>
+    <div class="gartist">${esc(r.artist)}</div>
+    <div class="gmeta"><span>${esc(r.year || '')}</span><b>${v !== null ? money(v) : '—'}</b></div>
+  </a></li>`;
+}
+
 function renderCollectionList() {
   const filters = { q: collView.q, genre: collView.genre, format: collView.format, shelf: collView.shelf };
   const shown = coll.sortItems(coll.filterItems(collItems, filters), collView.sort);
-  $('#coll-list').innerHTML = shown.map(collectionItemHtml).join('');
+  const grid = collView.layout === 'grid';
+  $('#coll-list').classList.toggle('grid', grid);
+  document.querySelectorAll('#coll-layout button').forEach((b) => b.classList.toggle('on', b.dataset.layout === collView.layout));
+  $('#coll-list').innerHTML = shown.map(grid ? collectionCardGridHtml : collectionItemHtml).join('');
   const filtered = !!(filters.q || filters.genre || filters.format || filters.shelf);
   $('#coll-reset').hidden = !filtered;
   $('#coll-empty').hidden = collItems.length > 0;
@@ -666,6 +742,13 @@ $('#coll-search').addEventListener('input', (e) => {
     saveCollView();
     renderCollectionList();
   });
+});
+$('#coll-layout').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-layout]');
+  if (!b) return;
+  collView.layout = b.dataset.layout;
+  saveCollView();
+  renderCollectionList();
 });
 $('#coll-reset').addEventListener('click', () => {
   Object.assign(collView, { q: '', genre: '', format: '', shelf: '' });
@@ -700,6 +783,11 @@ function renderJob(st) {
     text.textContent = `En pause : ${st.index} / ${st.ids.length} disques faits.${st.lastError ? ` ${st.lastError}` : ''}`;
     btn.textContent = 'Reprendre';
     btn.className = 'btn primary';
+  } else if (refresh.getFillState().running) {
+    const f = refresh.getFillState();
+    text.textContent = `Récupération des pochettes et infos Discogs en arrière-plan : ${f.done} / ${f.total}. Tu peux utiliser l'appli normalement.`;
+    btn.textContent = 'Actualiser les prix';
+    btn.className = 'btn primary';
   } else {
     const last = st?.lastCompletedAt;
     let txt = last ? `Dernière mise à jour : ${new Date(last).toLocaleString('fr-FR', { dateStyle: 'medium', timeStyle: 'short' })}` : 'Prix jamais mis à jour depuis Discogs.';
@@ -717,6 +805,7 @@ function renderJob(st) {
 let jobRenderTimer;
 refresh.onChange((st) => {
   renderJob(st);
+  if (!st) return;
   // On rafraîchit la liste de temps en temps pendant la mise à jour (pas à chaque disque).
   if (currentView === 'collection' && (!refresh.isRunning() || st.index % 10 === 0)) {
     clearTimeout(jobRenderTimer);
@@ -890,6 +979,7 @@ $('#rs-file').addEventListener('change', async (e) => {
       ${details.length ? `<ul>${details.slice(0, 20).map((d) => `<li>${esc(d)}</li>`).join('')}${details.length > 20 ? `<li>… et ${details.length - 20} autres</li>` : ''}</ul>` : ''}
       <a class="btn ghost block" href="#/collection">Voir ma collection</a>`;
     renderSettingsStats();
+    refresh.startBackgroundFill();
   } catch (err) {
     box.innerHTML = `<p class="status error">${esc(err.message || 'Import impossible.')}</p>`;
   }
@@ -975,6 +1065,7 @@ $('#token-form').addEventListener('submit', async (e) => {
   try {
     const user = await api.checkToken();
     setStatus(status, `✓ Jeton valide — connecté en tant que ${user}.`, 'ok');
+    refresh.startBackgroundFill();
     $('#token-banner').hidden = true;
   } catch (err) {
     if (err.status === 401) {
@@ -1003,3 +1094,5 @@ navigator.storage?.persist?.().catch(() => {});
 if (!api.getToken() && !location.hash) location.hash = '#/settings';
 route();
 renderJob(refresh.getState());
+// Récupère tranquillement les pochettes / masters manquants quelques secondes après l'ouverture.
+setTimeout(() => refresh.startBackgroundFill(), 4000);

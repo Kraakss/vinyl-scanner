@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>Vinyl Scanner</title>
   <meta name="description" content="Identifie tes vinyles avec Discogs : code-barres, numéro de catalogue ou photo.">
   <meta name="theme-color" content="#111214">
@@ -139,7 +139,13 @@
           <select id="coll-format" aria-label="Filtrer par format"></select>
           <select id="coll-shelf" aria-label="Filtrer par étagère"></select>
         </div>
-        <button class="linklike" id="coll-reset" hidden>Effacer les filtres</button>
+        <div class="toolbar-row">
+          <div class="seg" id="coll-layout" role="group" aria-label="Affichage">
+            <button type="button" data-layout="list" class="on"><svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>Liste</button>
+            <button type="button" data-layout="grid"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Grille</button>
+          </div>
+          <button class="linklike" id="coll-reset" hidden>Effacer les filtres</button>
+        </div>
       </div>
 
       <p class="summary" id="coll-shown"></p>
@@ -227,6 +233,7 @@
           <summary>Gérer ma collection</summary>
           <p>Sur la fiche d'un vinyle : « Ajouter à ma collection ». Tu peux ensuite y indiquer l'état, la quantité, l'étagère et une note, ou retirer le disque.</p>
           <p>Onglet <strong>Collection</strong> : recherche, tris et filtres (genre, format, étagère). « Stats » affiche la valeur totale, le top 10 et la répartition par genre et par décennie.</p>
+          <p>Quand tu scannes ou cherches un disque, un bandeau te prévient : <strong>rouge</strong> si tu as déjà cette version exacte, <strong>orange</strong> si tu as le même album dans une autre version (touche-la pour l'ouvrir), <strong>vert</strong> si tu ne l'as pas.</p>
           <p>« Actualiser les prix » met à jour le prix le plus bas Discogs de chaque disque. C'est long (environ 1 disque par seconde) : tu peux continuer à utiliser l'appli, mettre en pause et reprendre plus tard. Garde l'appli ouverte.</p>
         </details>
         <details>
@@ -235,11 +242,12 @@
           <p>La rareté combine : combien de membres l'ont, combien le recherchent, et combien d'exemplaires sont en vente.</p>
         </details>
       </div>
-      <p class="help center" id="app-version">Vinyl Scanner · v1.1.0 · données Discogs</p>
+      <p class="help center" id="app-version">Vinyl Scanner · v1.2.0 · données Discogs</p>
     </section>
 
     <!-- 4. Résultats multiples -->
     <section class="view" id="view-results" data-title="Résultats" hidden>
+      <div id="results-own"></div>
       <p class="summary" id="results-summary"></p>
       <ul class="list" id="results-list"></ul>
       <button class="btn ghost block" id="results-more" hidden>Afficher plus de résultats</button>

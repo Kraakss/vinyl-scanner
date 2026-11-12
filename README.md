@@ -38,21 +38,31 @@ S'il y a plusieurs pressages, une liste (pochette, pays, année, label, format) 
 
 Le fichier est lu sur le téléphone et n'est envoyé nulle part (ni sur GitHub, ni ailleurs). Tu peux réimporter un export plus récent : les disques déjà présents ne sont pas dupliqués, et tes notes et états ne sont pas écrasés. Un même disque présent deux fois devient un seul disque avec une quantité de 2.
 
-### 5. Ma collection
-- **Onglet Collection** : la liste de tes disques avec la valeur totale. Tu peux chercher (artiste, titre, label, n° de catalogue), trier (valeur, artiste, titre, année, date d'ajout) et filtrer (genre, format, étagère).
+### 5. Alerte « déjà dans ma collection »
+Quand tu ouvres la fiche d'un vinyle (scan, n° cat. ou photo), elle est comparée à ta collection :
+- **bandeau rouge** : tu as déjà ce vinyle, dans la même version (avec la quantité) ;
+- **bandeau orange** : tu as déjà cet album, mais dans une autre version. Tes versions sont listées (pays, année, label, n° cat.) et tu peux toucher chacune pour l'ouvrir ;
+- **pastille verte** : tu ne l'as pas.
+
+S'il y a plusieurs versions, la liste de choix affiche le même bandeau, et la version que tu possèdes porte la mention **Possédé**.
+
+La comparaison utilise le *master* Discogs, c'est-à-dire l'identifiant commun à toutes les versions d'un même album. Pour les disques importés, l'appli le récupère tout doucement en arrière-plan (30 requêtes par minute au maximum, seulement quand l'appli est ouverte), et aussi pendant « Actualiser les prix ». Tant qu'il n'est pas connu, ou si l'album n'a pas de master, l'appli compare l'artiste et le titre (sans accents, majuscules ni ponctuation).
+
+### 6. Ma collection
+- **Onglet Collection** : tes disques en **liste** ou en **grille** de pochettes, avec la valeur totale. Tu peux chercher (artiste, titre, label, n° de catalogue), trier (valeur, artiste, titre, année, date d'ajout) et filtrer (genre, format, étagère).
 - **Sur la fiche d'un vinyle** : « Ajouter à ma collection ». Une fois le disque dans ta collection, tu peux indiquer l'état du disque et de la pochette, l'étagère, la quantité, une note perso, ou le retirer.
 - **Stats** (bouton en haut de la collection) : nombre de vinyles, valeur totale et moyenne, top 10 des plus chers, répartition par genre et par décennie.
 - **Actualiser les prix** : va chercher le prix le plus bas actuel sur Discogs (en €) et les pochettes de toute la collection. Discogs limite à 60 requêtes par minute : compte environ **20 minutes la première fois** pour 470 disques (il faut aussi récupérer les pochettes), puis environ 10 minutes les fois suivantes. Pendant ce temps, tu peux utiliser l'appli normalement, mais garde-la ouverte. **Pause** / **Reprendre** à tout moment : si l'appli est fermée, elle reprend là où elle s'était arrêtée. Chaque disque affiche l'écart avec son ancienne valeur (▲ / ▼).
 
 La valeur d'un disque, c'est d'abord le prix de Record Scanner, puis le prix le plus bas en vente sur Discogs après chaque actualisation. Si aucun exemplaire n'est en vente, l'ancienne valeur est conservée.
 
-### 6. Sauvegarder
+### 7. Sauvegarder
 Dans **Réglages → Sauvegarde** :
 - **Exporter la collection (CSV pour Excel)** : un tableau lisible dans Excel.
 - **Sauvegarde complète (JSON)** : à garder en lieu sûr (Google Drive, e-mail…).
 - **Restaurer une sauvegarde JSON** : pour tout récupérer, par exemple sur un nouveau téléphone.
 
-### 7. Lire la fiche
+### 8. Lire la fiche
 - **Prix le plus bas actuel**, **nombre en vente**, **nombre de membres qui l'ont / le recherchent**.
 - **Rareté** : Commun / Peu courant / Rare, calculée à partir de ces chiffres (règles dans `js/rarity.js`).
 - **Actualiser les prix** : les fiches sont gardées 12 h, ce bouton force une mise à jour.

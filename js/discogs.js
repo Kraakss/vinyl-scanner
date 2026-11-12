@@ -135,6 +135,7 @@ function mapSearchResult(r) {
     catno: r.catno || '',
     format: (r.format || []).join(', '),
     thumb: r.thumb || r.cover_image || '',
+    masterId: r.master_id || null,
     have: r.community?.have ?? null,
     want: r.community?.want ?? null,
   };

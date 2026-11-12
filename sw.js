@@ -3,7 +3,7 @@
 // sur GitHub Pages est prise en compte dès la prochaine ouverture avec du réseau.
 // Les appels à l'API Discogs ne sont jamais mis en cache ici.
 
-const CACHE = 'vinyl-scanner-v2';
+const CACHE = 'vinyl-scanner-v3';
 const ASSETS = [
   './',
   './index.html',

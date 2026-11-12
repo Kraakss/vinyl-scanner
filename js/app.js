@@ -6,84 +6,22 @@ import * as scanner from './scanner.js';
 import { RARITY_LEVELS } from './rarity.js';
 import * as coll from './collection.js';
 import * as refresh from './refresh.js';
+import * as backend from './core/backend.js';
+import { games, priceJob, gamesCsv } from './games.js';
+import { dvd, dvdCsv } from './dvd.js';
+import { disney, disneyCsv } from './disney.js';
+import { LIVE_CATNO, APP_VERSION } from './config.js';
 
-const $ = (sel) => document.querySelector(sel);
 const CACHE_MAX_AGE = 12 * 60 * 60 * 1000; // une fiche de moins de 12 h n'est pas re-téléchargée
 
-// ---------- Utilitaires ----------
-
-const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
-function money(value, currency = 'EUR') {
-  if (value === null || value === undefined || Number.isNaN(value)) return '—';
-  try {
-    return new Intl.NumberFormat('fr-FR', { style: 'currency', currency }).format(value);
-  } catch {
-    return `${value.toFixed(2)} ${currency}`;
-  }
-}
-/** Vignette : image si on a une URL, sinon un disque gris. */
-const thumbHtml = (url, cls = 'thumb') => (url
-  ? `<img class="${cls}" src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.removeAttribute('src')">`
-  : `<div class="${cls}" aria-hidden="true"></div>`);
-
-/** "▲ +1,20 €" en vert, "▼ −0,50 €" en rouge */
-function deltaHtml(d) {
-  if (d === null || d === undefined) return '';
-  if (Math.abs(d) < 0.005) return '<span class="delta same">= stable</span>';
-  const sign = d > 0 ? '+' : '−';
-  return `<span class="delta ${d > 0 ? 'up' : 'down'}">${d > 0 ? '▲' : '▼'} ${sign}${money(Math.abs(d))}</span>`;
-}
-
-const dateFr = (ts) => (ts ? new Date(ts).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
-
-function download(filename, content, type) {
-  const blob = content instanceof Blob ? content : new Blob([content], { type });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-}
-
-const num = (n) => (n === null || n === undefined ? '—' : new Intl.NumberFormat('fr-FR').format(n));
-
-function timeAgo(ts) {
-  const s = Math.round((Date.now() - ts) / 1000);
-  if (s < 60) return "à l'instant";
-  if (s < 3600) return `il y a ${Math.round(s / 60)} min`;
-  if (s < 86400) return `il y a ${Math.round(s / 3600)} h`;
-  if (s < 86400 * 7) return `il y a ${Math.round(s / 86400)} j`;
-  return new Date(ts).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' });
-}
-
-let toastTimer;
-function toast(message, type = '') {
-  const t = $('#toast');
-  t.textContent = message;
-  t.className = `toast ${type}`;
-  t.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, type === 'error' ? 5000 : 3000);
-}
-
-function setLoading(on, text = 'Recherche sur Discogs…') {
-  $('#loader').hidden = !on;
-  $('#loader-text').textContent = text;
-}
-
-function setStatus(el, text, type = '') {
-  el.textContent = text;
-  el.className = `status ${type}`;
-}
+import { $, esc, money, num, thumbHtml, deltaHtml, dateFr, download, timeAgo, toast, setLoading as setLoadingBase, setStatus } from './core/ui.js';
+const setLoading = (on, text = 'Recherche sur Discogs…') => setLoadingBase(on, text);
 
 api.setWaitListener((ms) => toast(`Limite Discogs atteinte : reprise dans ${Math.ceil(ms / 1000)} s…`));
 
 // ---------- Navigation (par #hash, compatible bouton Retour du téléphone) ----------
 
-const TABS = ['scan', 'catno', 'photo', 'collection', 'history', 'settings'];
+const TABS = ['home', 'scan', 'catno', 'collection', 'history', 'settings'];
 let collectionScroll = 0;
 // Fiche ouverte depuis la collection (ou les stats) : inutile d'afficher l'alerte de possession.
 let releaseFromCollection = false;
@@ -91,14 +29,96 @@ let currentView = null;
 let searchState = null; // { result, items, label, method, query }
 let pendingSource = null; // origine de la prochaine fiche ouverte (pour l'historique)
 
+// ---------- Les 4 collections ----------
+
+const SECTIONS = { games, dvd, disney };
+let activeSection = null; // section Jeux / DVD / Disney affichée
+let lastSection = 'home'; // pour la barre d'onglets de Réglages
+let routeKey = null; // ex. 'games/collection'
+const scrollMemory = {};
+
+const ICON_HOME = '<svg viewBox="0 0 24 24"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>';
+const ICON_SETTINGS = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>';
+const ICON_VINYL = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></svg>';
+const ICON_GAME = '<svg viewBox="0 0 24 24"><path d="M6 9h12a4 4 0 0 1 4 4v1a3 3 0 0 1-5.2 2L15 14H9l-1.8 2A3 3 0 0 1 2 14v-1a4 4 0 0 1 4-4z"/></svg>';
+const ICON_DVD = '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14"/></svg>';
+const ICON_STAR = '<svg viewBox="0 0 24 24"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.4 6.8 19.1l1-5.8L3.5 9.2l5.9-.9z"/></svg>';
+const ICON_SCAN = '<svg viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 8v8M10 8v8M13 8v8M16 8v8"/></svg>';
+const ICON_HASH = '<svg viewBox="0 0 24 24"><path d="M5 9h14M5 15h14M10 4L8 20M16 4l-2 16"/></svg>';
+const ICON_COLL = '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="4" height="16" rx="1"/><rect x="9" y="4" width="4" height="16" rx="1"/><path d="M15.5 5.2l3.8-1 3.2 15.3-3.8 1z"/></svg>';
+const ICON_CLOCK = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+
+const SECTION_TABS = {
+  home: [
+    { tab: 'vinyl', href: '#/scan', label: 'Vinyles', icon: ICON_VINYL },
+    { tab: 'games', href: '#/games/scan', label: 'Jeux', icon: ICON_GAME },
+    { tab: 'dvd', href: '#/dvd/scan', label: 'DVD', icon: ICON_DVD },
+    { tab: 'disney', href: '#/disney', label: 'Disney', icon: ICON_STAR },
+  ],
+  vinyl: [
+    { tab: 'scan', href: '#/scan', label: 'Scanner', icon: ICON_SCAN },
+    { tab: 'catno', href: '#/catno', label: 'N° cat.', icon: ICON_HASH },
+    { tab: 'collection', href: '#/collection', label: 'Collection', icon: ICON_COLL },
+    { tab: 'history', href: '#/history', label: 'Historique', icon: ICON_CLOCK },
+  ],
+  games: games.tabs,
+  dvd: dvd.tabs,
+  disney: disney.tabs,
+};
+
+function renderTabbar(section, activeTab) {
+  const tabs = [{ tab: 'home', href: '#/home', label: 'Accueil', icon: ICON_HOME }, ...(SECTION_TABS[section] || []), { tab: 'settings', href: '#/settings', label: 'Réglages', icon: ICON_SETTINGS }];
+  const nav = $('#tabbar');
+  nav.style.gridTemplateColumns = `repeat(${tabs.length}, minmax(0, 1fr))`;
+  nav.dataset.section = section;
+  nav.innerHTML = tabs.map((t) => `<a href="${t.href}" data-tab="${t.tab}"${t.tab === activeTab ? ' class="active" aria-current="page"' : ''}>${t.icon}<span>${esc(t.label)}</span></a>`).join('');
+}
+
+function showView(el, title, isRoot) {
+  document.querySelectorAll('.view').forEach((v) => { v.hidden = v !== el; });
+  setLoading(false);
+  $('#page-title').textContent = title;
+  $('#back-btn').hidden = isRoot;
+}
+
 function go(hash) {
   if (location.hash === hash) route();
   else location.hash = hash;
 }
 
 async function route() {
-  const [, name = 'scan', param] = location.hash.replace(/^#\/?/, '#/').split('/');
-  const view = ['results', 'release', 'stats', ...TABS].includes(name) ? name : 'scan';
+  const parts = location.hash.replace(/^#\/?/, '').split('/').filter((p, i) => p || i === 0);
+  const first = parts[0] || 'home';
+  const prevKey = routeKey;
+  routeKey = parts.slice(0, 2).join('/') || 'home';
+  if (prevKey && /\/collection$|^collection$/.test(prevKey)) scrollMemory[prevKey] = window.scrollY;
+
+  // On éteint toute caméra en changeant d'écran
+  if (live?.isRunning() && first !== 'catno') live.stop();
+  if (activeSection && activeSection !== SECTIONS[first]) { await activeSection.leave(); activeSection = null; }
+
+  if (SECTIONS[first]) {
+    if (currentView === 'scan') await scanner.stopCamera().then(updateCamUi);
+    if (currentView === 'collection') collectionScroll = window.scrollY;
+    currentView = `ext:${first}`;
+    activeSection = SECTIONS[first];
+    lastSection = first;
+    const res = await activeSection.route(parts.slice(1), prevKey);
+    if (location.hash.replace(/^#\/?/, '').split('/')[0] !== first) return; // l'utilisateur est déjà ailleurs
+    showView(res.el, res.title, res.isRoot);
+    renderTabbar(first, res.tab);
+    $('#token-banner').hidden = true;
+    window.scrollTo(0, 0);
+    // Retour d'une fiche vers la collection : on retrouve sa position dans la liste
+    if (/\/collection$/.test(routeKey) && prevKey && prevKey.startsWith(`${first}/item`)) {
+      setTimeout(() => window.scrollTo(0, scrollMemory[routeKey] || 0), 250);
+    }
+    return;
+  }
+
+  const name = first === 'photo' ? 'photo' : first;
+  const param = parts[1];
+  const view = ['results', 'release', 'stats', 'photo', ...TABS].includes(name) ? name : 'home';
 
   if (currentView === 'scan' && view !== 'scan') await scanner.stopCamera().then(updateCamUi);
   if (currentView === 'collection' && view !== 'collection') collectionScroll = window.scrollY;
@@ -106,16 +126,17 @@ async function route() {
   if (view === 'release' && currentView !== 'release') releaseFromCollection = ['collection', 'stats'].includes(currentView);
   currentView = view;
 
-  document.querySelectorAll('.view').forEach((v) => { v.hidden = v.id !== `view-${view}`; });
-  setLoading(false);
-  const section = $(`#view-${view}`);
-  $('#page-title').textContent = section.dataset.title;
-  $('#back-btn').hidden = TABS.includes(view);
-  const tab = view === 'stats' ? 'collection' : view;
-  document.querySelectorAll('.tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
+  const sectionEl = $(`#view-${view}`);
+  showView(sectionEl, sectionEl.dataset.title, TABS.includes(view));
+  const section = view === 'home' ? 'home' : view === 'settings' ? lastSection : 'vinyl';
+  if (section !== 'home' && view !== 'settings') lastSection = 'vinyl';
+  if (view === 'home') lastSection = 'home';
+  const tab = view === 'stats' ? 'collection' : view === 'photo' ? 'catno' : view;
+  renderTabbar(section, tab);
   $('#token-banner').hidden = !!api.getToken() || !['scan', 'catno', 'photo'].includes(view);
   window.scrollTo(0, 0);
 
+  if (view === 'home') renderHome();
   if (view === 'collection') renderCollection().then(() => { if (backToCollection) window.scrollTo(0, collectionScroll); });
   if (view === 'stats') renderStats();
 
@@ -128,8 +149,56 @@ async function route() {
 window.addEventListener('hashchange', route);
 $('#back-btn').addEventListener('click', () => {
   if (history.length > 1) history.back();
-  else go('#/scan');
+  else go('#/home');
 });
+
+// ---------- Accueil ----------
+
+async function renderHome() {
+  try {
+    const items = await db.getCollection();
+    const s = coll.computeStats(items);
+    $('#home-vinyl').textContent = items.length ? `${num(s.discs)} vinyle${s.discs > 1 ? 's' : ''} · ${money(s.total)}` : 'Aucun vinyle pour l\'instant';
+  } catch { $('#home-vinyl').textContent = '—'; }
+  const [g, d, dn] = await Promise.all([games.summary(), dvd.summary(), disney.summary()]);
+  $('#home-games').textContent = g.count ? `${num(g.count)} jeu${g.count > 1 ? 'x' : ''} · ${money(g.total)}` : 'Aucun jeu pour l\'instant';
+  $('#home-dvd').textContent = d.count ? `${num(d.count)} film${d.count > 1 ? 's' : ''}` : 'Aucun film pour l\'instant';
+  $('#home-disney').textContent = dn.total ? `${num(dn.have)} / ${num(dn.total)} Grands Classiques` : 'Grands Classiques';
+  $('#home-disney-bar').style.width = `${dn.total ? (dn.have / dn.total) * 100 : 0}%`;
+  $('#home-worker-banner').hidden = backend.isConfigured();
+}
+
+// ---------- Scan du n° de catalogue en direct (module isolé, voir js/config.js) ----------
+
+let live = null;
+if (LIVE_CATNO) {
+  $('#live-catno-card').hidden = false;
+  import('./livecatno.js').then(({ createLiveCatno }) => {
+    live = createLiveCatno($('#live-catno'), {
+      onPick: (value) => {
+        $('#catno-input').value = value;
+        searchCatno({ catno: value, artist: $('#catno-artist').value.trim(), label: $('#catno-label').value.trim() }, 'ocr');
+      },
+      onStatus: (text, type) => setStatus($('#live-status'), text, type),
+    });
+  }).catch(() => { $('#live-catno-card').hidden = true; });
+}
+
+// ---------- Indicateur « mise à jour des prix en cours » (vinyles ou jeux) ----------
+
+function updatePill() {
+  const vinylRunning = refresh.isRunning();
+  const gamesRunning = priceJob.isRunning();
+  const st = vinylRunning ? refresh.getState() : gamesRunning ? priceJob.getState() : null;
+  const pct = st && st.ids?.length ? Math.round((st.index / st.ids.length) * 100) : 0;
+  $('#job-pill').hidden = !st;
+  $('#job-line').hidden = !st;
+  $('#job-pill').href = gamesRunning && !vinylRunning ? '#/games/collection' : '#/collection';
+  $('#job-pill-text').textContent = `${gamesRunning && !vinylRunning ? 'jeux ' : ''}${pct} %`;
+  $('#job-line-bar').style.width = `${pct}%`;
+}
+window.addEventListener('jobprogress', updatePill);
+priceJob.onChange(updatePill);
 
 // ---------- Recherche commune ----------
 
@@ -764,10 +833,7 @@ function renderJob(st) {
   const running = refresh.isRunning();
   const pct = st && st.ids?.length ? Math.round((st.index / st.ids.length) * 100) : 0;
   // Indicateur visible sur tous les écrans pendant la mise à jour
-  $('#job-pill').hidden = !running;
-  $('#job-line').hidden = !running;
-  $('#job-pill-text').textContent = `${pct} %`;
-  $('#job-line-bar').style.width = `${pct}%`;
+  updatePill();
 
   if (currentView !== 'collection') return;
   const btn = $('#job-btn');
@@ -891,7 +957,7 @@ async function renderStats() {
 
 // ---------- 7. Historique ----------
 
-const METHOD_LABELS = { barcode: 'Code-barres', catno: 'N° cat.', ocr: 'Photo' };
+const METHOD_LABELS = { barcode: 'Code-barres', catno: 'N° cat.', ocr: 'Lecture n°' };
 
 async function renderHistory() {
   const list = $('#history-list');
@@ -1003,7 +1069,7 @@ $('#export-csv-btn').addEventListener('click', async () => {
 $('#export-btn').addEventListener('click', async () => {
   try {
     const data = await db.exportAll();
-    download(`sauvegarde-vinyles-${today()}.json`, JSON.stringify(data), 'application/json');
+    download(`sauvegarde-complete-${today()}.json`, JSON.stringify(data), 'application/json');
     setStatus($('#backup-status'), `Sauvegarde créée (${num(data.releases.length)} fiches). Garde-la en lieu sûr (Drive, mail…).`, 'ok');
   } catch (e) {
     setStatus($('#backup-status'), `Export impossible : ${e.message}`, 'error');
@@ -1020,7 +1086,12 @@ $('#restore-file').addEventListener('change', async (e) => {
     let data;
     try { data = JSON.parse(await file.text()); } catch { throw new Error('Ce fichier n\'est pas un JSON valide.'); }
     const res = await db.importBackup(data);
-    setStatus(status, `✓ Restauré : ${num(res.releases)} fiches, dont ${num(res.inCollection)} dans la collection.`, 'ok');
+    const parts = [];
+    if (res.releases) parts.push(`${num(res.releases)} fiches vinyles (dont ${num(res.inCollection)} en collection)`);
+    if (res.games) parts.push(`${num(res.games)} jeux`);
+    if (res.dvds) parts.push(`${num(res.dvds)} DVD`);
+    if (res.disney) parts.push(`${num(res.disney)} Classiques Disney`);
+    setStatus(status, `✓ Restauré : ${parts.join(', ') || 'rien à restaurer'}.`, 'ok');
     renderSettingsStats();
   } catch (err) {
     setStatus(status, err.message, 'error');
@@ -1031,9 +1102,9 @@ $('#restore-file').addEventListener('change', async (e) => {
 
 async function renderSettingsStats() {
   try {
-    const [n, items] = await Promise.all([db.countReleases(), db.getCollection()]);
+    const [n, items, g, d, dn] = await Promise.all([db.countReleases(), db.getCollection(), games.summary(), dvd.summary(), disney.summary()]);
     const discs = items.reduce((s, r) => s + coll.quantityOf(r), 0);
-    $('#data-stats').textContent = `Sur ce téléphone : ${num(discs)} vinyle${discs > 1 ? 's' : ''} dans ta collection, ${num(n)} fiche${n > 1 ? 's' : ''} au total.`;
+    $('#data-stats').textContent = `Sur ce téléphone : ${num(discs)} vinyle${discs > 1 ? 's' : ''} (${num(n)} fiches), ${num(g.count)} jeu${g.count > 1 ? 'x' : ''}, ${num(d.count)} DVD, ${num(dn.have)} Classiques Disney.`;
   } catch {
     $('#data-stats').textContent = 'Stockage local indisponible (navigation privée ?).';
   }
@@ -1043,8 +1114,83 @@ async function renderSettings() {
   const input = $('#token-input');
   input.value = api.getToken();
   setStatus($('#token-status'), api.getToken() ? 'Jeton enregistré sur ce téléphone.' : 'Aucun jeton enregistré.');
+  $('#worker-input').value = backend.getWorkerUrl();
   renderSettingsStats();
+  db.getSnapshot().then((snap) => { $('#snapshot-btn').hidden = !snap; }).catch(() => {});
 }
+
+// ---------- Serveur (Cloudflare Worker) ----------
+
+const checkLine = (ok, label, hint) => `<div class="wcheck ${ok ? 'ok' : 'ko'}"><span aria-hidden="true">${ok ? '✓' : '✗'}</span><div><b>${esc(label)}</b>${ok ? '' : `<small>${esc(hint)}</small>`}</div></div>`;
+
+$('#worker-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const url = backend.setWorkerUrl($('#worker-input').value);
+  $('#worker-input').value = url;
+  const box = $('#worker-checks');
+  if (!url) { box.innerHTML = '<p class="status">Adresse effacée de ce téléphone.</p>'; return; }
+  box.innerHTML = '<p class="status">Test du serveur…</p>';
+  let h;
+  try {
+    h = await backend.health();
+  } catch (err) {
+    box.innerHTML = checkLine(false, 'Serveur injoignable', `${err.message} Vérifie l'adresse (elle se termine par .workers.dev).`);
+    return;
+  }
+  // On fait un vrai petit appel à chaque service pour vérifier les clés
+  const test = async (enabled, fn) => { if (!enabled) return 'Clé absente du Worker.'; try { await fn(); return ''; } catch (err) { return err.message; } };
+  const [igdbErr, ebayErr, tmdbErr] = await Promise.all([
+    test(h.igdb, () => backend.igdb('games', 'fields name; limit 1;')),
+    test(h.ebay, () => backend.ebaySearch({ q: 'zelda switch', limit: 1 })),
+    test(h.tmdb, () => backend.tmdb('configuration')),
+  ]);
+  box.innerHTML = checkLine(true, 'Serveur joignable', '')
+    + checkLine(!igdbErr, 'IGDB — infos et jaquettes des jeux', `${igdbErr} (TWITCH_CLIENT_ID et TWITCH_CLIENT_SECRET)`)
+    + checkLine(!ebayErr, 'eBay — prix des jeux', `${ebayErr} (EBAY_CLIENT_ID et EBAY_CLIENT_SECRET)`)
+    + checkLine(!tmdbErr, 'TMDB — DVD et affiches Disney', `${tmdbErr} (TMDB_TOKEN)`);
+  if (!igdbErr && !ebayErr && !tmdbErr) toast('Serveur prêt : tout fonctionne !');
+});
+
+// ---------- Sauvegardes par collection ----------
+
+const SECTION_NAMES = { vinyl: 'vinyles', game: 'jeux-video', dvd: 'dvd', disney: 'disney' };
+
+document.querySelectorAll('[data-export]').forEach((btn) => btn.addEventListener('click', async () => {
+  const section = btn.dataset.export;
+  try {
+    const data = await db.exportAll(section);
+    download(`sauvegarde-${SECTION_NAMES[section]}-${today()}.json`, JSON.stringify(data), 'application/json');
+    setStatus($('#backup-status'), 'Sauvegarde créée. Garde-la en lieu sûr (Drive, mail…).', 'ok');
+  } catch (e) {
+    setStatus($('#backup-status'), `Export impossible : ${e.message}`, 'error');
+  }
+}));
+
+document.querySelectorAll('[data-csv]').forEach((btn) => btn.addEventListener('click', async () => {
+  const section = btn.dataset.csv;
+  try {
+    let csv;
+    if (section === 'disney') csv = await disneyCsv();
+    else {
+      const items = await db.getItems(section, { ownedOnly: true });
+      if (!items.length) { setStatus($('#backup-status'), 'Cette collection est vide.', 'error'); return; }
+      csv = section === 'game' ? gamesCsv(items) : dvdCsv(items);
+    }
+    download(`ma-collection-${SECTION_NAMES[section]}-${today()}.csv`, csv, 'text/csv;charset=utf-8');
+    setStatus($('#backup-status'), 'Fichier CSV créé.', 'ok');
+  } catch (e) {
+    setStatus($('#backup-status'), `Export impossible : ${e.message}`, 'error');
+  }
+}));
+
+$('#snapshot-btn').addEventListener('click', async () => {
+  const snap = await db.getSnapshot();
+  if (!snap) return;
+  // Même format qu'une sauvegarde v1 : restaurable tel quel
+  const data = { app: 'vinyl-scanner', dbVersion: 1, exportedAt: new Date(snap.createdAt).toISOString(), releases: snap.releases, history: snap.history };
+  download(`copie-securite-vinyles-avant-v2-${today()}.json`, JSON.stringify(data), 'application/json');
+  setStatus($('#backup-status'), `Copie de sécurité du ${dateFr(snap.createdAt)} : ${num(snap.releases.length)} fiches vinyles.`, 'ok');
+});
 
 $('#token-show').addEventListener('click', () => {
   const input = $('#token-input');
@@ -1091,7 +1237,11 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
 // Demande au navigateur de ne pas effacer la base locale si l'espace manque.
 navigator.storage?.persist?.().catch(() => {});
 
-if (!api.getToken() && !location.hash) location.hash = '#/settings';
+// Les écrans Jeux vidéo, DVD et Disney sont construits au démarrage
+[games, dvd, disney].forEach((sec) => sec.mount($('#main')));
+db.onBlocked(() => toast('Mise à jour de la base en attente : ferme les autres onglets ou fenêtres de l\'appli.', 'error'));
+$('#app-version').textContent = `Vinyl Scanner · v${APP_VERSION} · Discogs, IGDB, eBay, TMDB`;
+if (!location.hash) location.hash = '#/home';
 route();
 renderJob(refresh.getState());
 // Récupère tranquillement les pochettes / masters manquants quelques secondes après l'ouverture.

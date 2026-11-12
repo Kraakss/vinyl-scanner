@@ -33,6 +33,41 @@
       <span>Ajoute ton jeton Discogs dans Réglages pour lancer des recherches →</span>
     </a>
 
+    <!-- Accueil : les 4 collections -->
+    <section class="view" id="view-home" data-title="Mes collections" hidden>
+      <div class="home-grid">
+        <div class="hblock vinyl">
+          <div class="hicon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/><path d="M12 6.5a5.5 5.5 0 0 1 5.5 5.5"/></svg></div>
+          <h2>Vinyles</h2>
+          <p class="hstat" id="home-vinyl">…</p>
+          <div class="hbtns"><a class="btn primary" href="#/scan">Scanner</a><a class="btn ghost" href="#/collection">Collection</a></div>
+        </div>
+        <div class="hblock games">
+          <div class="hicon"><svg viewBox="0 0 24 24"><path d="M6 9h12a4 4 0 0 1 4 4v1a3 3 0 0 1-5.2 2L15 14H9l-1.8 2A3 3 0 0 1 2 14v-1a4 4 0 0 1 4-4z"/><path d="M7 11v3M5.5 12.5h3M16 12h.01M18 13.5h.01"/></svg></div>
+          <h2>Jeux vidéo</h2>
+          <p class="hstat" id="home-games">…</p>
+          <div class="hbtns"><a class="btn primary" href="#/games/scan">Scanner</a><a class="btn ghost" href="#/games/collection">Collection</a></div>
+        </div>
+        <div class="hblock dvd">
+          <div class="hicon"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14M3 9h4M3 15h4M17 9h4M17 15h4"/></svg></div>
+          <h2>DVD</h2>
+          <p class="hstat" id="home-dvd">…</p>
+          <div class="hbtns"><a class="btn primary" href="#/dvd/scan">Scanner</a><a class="btn ghost" href="#/dvd/collection">Collection</a></div>
+        </div>
+        <div class="hblock disney">
+          <div class="hicon"><svg viewBox="0 0 24 24"><path d="M12 3l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.4 6.8 19.1l1-5.8L3.5 9.2l5.9-.9z"/></svg></div>
+          <h2>Disney</h2>
+          <p class="hstat" id="home-disney">…</p>
+          <div class="progress"><div class="bar"><span id="home-disney-bar"></span></div></div>
+          <div class="hbtns"><a class="btn primary" href="#/disney/scan">Scanner</a><a class="btn ghost" href="#/disney">Classiques</a></div>
+        </div>
+      </div>
+      <a class="banner" id="home-worker-banner" href="#/settings" hidden>
+        <strong>Jeux vidéo, DVD et affiches Disney</strong>
+        <span>Ils ont besoin de ton petit serveur gratuit (Cloudflare Worker). Configure-le dans Réglages →</span>
+      </a>
+    </section>
+
     <!-- 1. Scan du code-barres -->
     <section class="view" id="view-scan" data-title="Scanner">
       <div class="camera">
@@ -61,6 +96,11 @@
 
     <!-- 2. Saisie manuelle du numéro de catalogue -->
     <section class="view" id="view-catno" data-title="N° de catalogue" hidden>
+      <div class="card live" id="live-catno-card" hidden>
+        <h2>Scan du n° en direct</h2>
+        <div id="live-catno"></div>
+        <p class="status" id="live-status" role="status"></p>
+      </div>
       <form class="card form" id="catno-form" autocomplete="off">
         <label for="catno-input">Numéro de catalogue</label>
         <input id="catno-input" placeholder="ex. PB 41447" autocapitalize="characters" required>
@@ -71,6 +111,7 @@
         <input id="catno-label" placeholder="ex. RCA">
         <button class="btn primary block" type="submit">Rechercher</button>
       </form>
+      <a class="btn ghost block" href="#/photo">Lire le n° sur une photo (si le direct coince)</a>
     </section>
 
     <!-- 3. Photo du numéro de catalogue (OCR) -->
@@ -188,6 +229,17 @@
         <p class="status" id="token-status" role="status"></p>
       </form>
 
+      <form class="card form" id="worker-form" autocomplete="off">
+        <h2>Serveur des jeux, DVD et Disney</h2>
+        <label for="worker-input">Adresse de ton Cloudflare Worker</label>
+        <input id="worker-input" type="text" inputmode="url" placeholder="https://vinyl-scanner-api.xxx.workers.dev" spellcheck="false" autocapitalize="off" autocorrect="off">
+        <p class="help">Nécessaire pour les jeux vidéo (IGDB + prix eBay), les DVD et les affiches Disney (TMDB). Les clés secrètes restent dans le Worker, pas dans l'appli. Le guide pas à pas est dans « Mode d'emploi » ci-dessous.</p>
+        <div class="row">
+          <button class="btn primary grow" type="submit">Enregistrer et tester</button>
+        </div>
+        <div class="worker-checks" id="worker-checks"></div>
+      </form>
+
       <div class="card">
         <h2>Importer depuis Record Scanner</h2>
         <p class="help">Dans Record Scanner, exporte ta collection en CSV, puis choisis le fichier ici. Il est lu sur ce téléphone et n'est envoyé nulle part. Tu peux réimporter sans créer de doublons.</p>
@@ -201,12 +253,19 @@
       <div class="card">
         <h2>Sauvegarde</h2>
         <p class="help" id="data-stats">…</p>
-        <button class="btn ghost block" id="export-csv-btn">Exporter la collection (CSV pour Excel)</button>
-        <button class="btn ghost block" id="export-btn">Sauvegarde complète (JSON)</button>
+        <div class="brows">
+          <div class="brow"><span>Vinyles</span><button class="btn ghost" id="export-csv-btn">CSV</button><button class="btn ghost" data-export="vinyl">JSON</button></div>
+          <div class="brow"><span>Jeux vidéo</span><button class="btn ghost" data-csv="game">CSV</button><button class="btn ghost" data-export="game">JSON</button></div>
+          <div class="brow"><span>DVD</span><button class="btn ghost" data-csv="dvd">CSV</button><button class="btn ghost" data-export="dvd">JSON</button></div>
+          <div class="brow"><span>Disney</span><button class="btn ghost" data-csv="disney">CSV</button><button class="btn ghost" data-export="disney">JSON</button></div>
+        </div>
+        <p class="help">CSV : tableau pour Excel. JSON : sauvegarde à garder pour restaurer.</p>
+        <button class="btn ghost block" id="export-btn">Sauvegarde complète des 4 collections (JSON)</button>
         <label class="btn ghost block">
           Restaurer une sauvegarde JSON
           <input type="file" accept=".json,application/json" id="restore-file" hidden>
         </label>
+        <button class="btn ghost block" id="snapshot-btn" hidden>Copie de sécurité des vinyles d'avant la v2 (JSON)</button>
         <p class="status" id="backup-status" role="status"></p>
       </div>
 
@@ -222,12 +281,28 @@
           <p>Onglet <strong>Scanner</strong> → « Démarrer la caméra », autorise l'accès, puis vise le code-barres au dos de la pochette, bien à plat et éclairé. La recherche part toute seule. Si ça ne lit pas, utilise « Scanner depuis une photo » ou tape les chiffres.</p>
         </details>
         <details>
-          <summary>Chercher par numéro de catalogue</summary>
-          <p>Onglet <strong>N° cat.</strong> → tape le numéro (ex. « PB 41447 »). Ajoute l'artiste ou le label si trop de résultats sortent.</p>
+          <summary>Vinyles : chercher par numéro de catalogue</summary>
+          <p>Onglet <strong>N° cat.</strong> → « Scanner le n° en direct » : place le numéro dans le cadre. Les numéros lus apparaissent en boutons ; touche le bon, la recherche part toute seule. La lampe ⚡ s'affiche si ton téléphone le permet.</p>
+          <p>Tu peux aussi taper le numéro (ex. « PB 41447 ») ou utiliser « Lire le n° sur une photo ».</p>
         </details>
         <details>
-          <summary>Lire le numéro sur une photo</summary>
-          <p>Onglet <strong>Photo</strong> → prends le numéro en photo, de près. Le téléphone lit le texte (la 1<sup>re</sup> fois, il télécharge ~5 Mo). Touche le numéro proposé ou corrige le texte, puis « Rechercher ».</p>
+          <summary>Jeux vidéo</summary>
+          <p>Scanne le code-barres (choisis la plateforme si elle n'est pas détectée) ou cherche par titre + plateforme. Sur la fiche : complet/loose, état, région, puis « Ajouter à ma collection ».</p>
+          <p>Le prix est la médiane des annonces en cours sur eBay.fr pour ce jeu et cette plateforme (lots, accessoires, boîtes vides et autres consoles exclus). Tu peux corriger la valeur à la main. « Actualiser les prix » dans la collection met tout à jour.</p>
+        </details>
+        <details>
+          <summary>DVD</summary>
+          <p>Scanne le code-barres ou cherche par titre. Indique le format (DVD, Blu-ray, 4K), l'édition et l'état, puis ajoute.</p>
+        </details>
+        <details>
+          <summary>Disney (Grands Classiques)</summary>
+          <p>La grille montre les Classiques numérotés : en couleur ceux que tu as, grisés avec un cadenas ceux qui manquent. Touche un film pour « Je l'ai ».</p>
+          <p>Scan en série : la caméra reste allumée. Un code déjà connu répond tout de suite ; sinon l'appli propose le film probable ou te laisse choisir le numéro, puis s'en souvient.</p>
+          <p>Nouveau Classique ? Ajoute une ligne dans le fichier <code>data/disney-classiques.json</code> du dépôt GitHub.</p>
+        </details>
+        <details>
+          <summary>Configurer le serveur (Cloudflare Worker)</summary>
+          <p>Le guide complet, étape par étape, est dans le fichier <a href="https://github.com/Kraakss/vinyl-scanner#configurer-le-serveur" target="_blank" rel="noopener">README du projet</a> (section « Configurer le serveur »).</p>
         </details>
         <details>
           <summary>Gérer ma collection</summary>
@@ -242,7 +317,7 @@
           <p>La rareté combine : combien de membres l'ont, combien le recherchent, et combien d'exemplaires sont en vente.</p>
         </details>
       </div>
-      <p class="help center" id="app-version">Vinyl Scanner · v1.2.0 · données Discogs</p>
+      <p class="help center" id="app-version">Vinyl Scanner · v2.0.0 · Discogs, IGDB, eBay, TMDB</p>
     </section>
 
     <!-- 4. Résultats multiples -->
@@ -265,32 +340,7 @@
     <div class="loader" id="loader" hidden><div class="spinner"></div><p id="loader-text">Recherche sur Discogs…</p></div>
   </main>
 
-  <nav class="tabbar" aria-label="Navigation principale">
-    <a href="#/scan" data-tab="scan">
-      <svg viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 8v8M10 8v8M13 8v8M16 8v8"/></svg>
-      <span>Scanner</span>
-    </a>
-    <a href="#/catno" data-tab="catno">
-      <svg viewBox="0 0 24 24"><path d="M5 9h14M5 15h14M10 4L8 20M16 4l-2 16"/></svg>
-      <span>N° cat.</span>
-    </a>
-    <a href="#/photo" data-tab="photo">
-      <svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
-      <span>Photo</span>
-    </a>
-    <a href="#/collection" data-tab="collection">
-      <svg viewBox="0 0 24 24"><rect x="3" y="4" width="4" height="16" rx="1"/><rect x="9" y="4" width="4" height="16" rx="1"/><path d="M15.5 5.2l3.8-1 3.2 15.3-3.8 1z"/></svg>
-      <span>Collection</span>
-    </a>
-    <a href="#/history" data-tab="history">
-      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
-      <span>Historique</span>
-    </a>
-    <a href="#/settings" data-tab="settings">
-      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
-      <span>Réglages</span>
-    </a>
-  </nav>
+  <nav class="tabbar" id="tabbar" aria-label="Navigation principale"></nav>
 
   <div class="toast" id="toast" role="alert" hidden></div>
 

@@ -3,7 +3,7 @@
 // sur GitHub Pages est prise en compte dès la prochaine ouverture avec du réseau.
 // Les appels à l'API Discogs ne sont jamais mis en cache ici.
 
-const CACHE = 'vinyl-scanner-v3';
+const CACHE = 'vinyl-scanner-v4';
 const ASSETS = [
   './',
   './index.html',
@@ -16,6 +16,17 @@ const ASSETS = [
   './js/ocr.js',
   './js/collection.js',
   './js/refresh.js',
+  './js/config.js',
+  './js/core/ui.js',
+  './js/core/backend.js',
+  './js/core/job.js',
+  './js/core/media.js',
+  './js/games.js',
+  './js/games-pricing.js',
+  './js/dvd.js',
+  './js/disney.js',
+  './js/livecatno.js',
+  './data/disney-classiques.json',
   './vendor/html5-qrcode.min.js',
   './vendor/papaparse.min.js',
   './manifest.webmanifest',
@@ -40,8 +51,11 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   if (req.method !== 'GET' || url.origin !== self.location.origin) return; // Discogs, CDN… : pas d'interception
 
+  // « no-cache » : on demande toujours au serveur si le fichier a changé (réponse 304
+  // très légère sinon). Évite de mélanger une nouvelle page avec d'anciens scripts.
+  const fresh = req.mode === 'navigate' ? fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' }) : fetch(req, { cache: 'no-cache' });
   event.respondWith(
-    fetch(req)
+    fresh
       .then((res) => {
         if (res.ok) {
           const copy = res.clone();

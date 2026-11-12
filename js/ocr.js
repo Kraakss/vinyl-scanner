@@ -18,7 +18,8 @@ function loadScript(src) {
   });
 }
 
-async function getWorker() {
+export async function getWorker(onProgress) {
+  if (onProgress) progressCb = onProgress;
   if (worker) return worker;
   if (!loading) {
     loading = (async () => {

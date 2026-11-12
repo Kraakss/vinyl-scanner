@@ -31,16 +31,36 @@
 //  • history   (clé auto) → une ligne par recherche aboutie
 //      { id, releaseId, at, method: 'barcode' | 'catno' | 'ocr', query }
 
+//  ---- Ajouts de la version 2 (v2.0.0 de l'appli) : AUCUNE donnée existante n'est modifiée ----
+//
+//  • items     (clé : key) → jeux vidéo et DVD (kind = 'game' | 'dvd')
+//      { key, kind, sourceId, title, sortTitle, year, coverUrl, thumbUrl, genres, summary,
+//        platform, platformName (jeux), mediaType (DVD : 'movie' | 'tv'), people,
+//        inCollection: 0|1, collection: { addedAt, quantity, notes, condition, completeness, region, format, edition },
+//        price: { median, low, high, count, basis, fetchedAt, … } (jeux), manualValue, estimatedValue, valueInfo,
+//        barcodes: [], firstSeenAt, lastSeenAt, detailFetchedAt }
+//  • disney    (clé : num) → { num, owned: 0|1, format, edition, condition, notes, addedAt, barcodes: [] }
+//  • barcodes  (clé : code) → lien code-barres → objet : { code, kind, ref, title, at }
+//  • meta      (clé : key) → petites données diverses (affiches Disney en cache…)
+//  • snapshots (clé : id)  → copie de sécurité des vinyles faite automatiquement avant la migration
+
 const DB_NAME = 'vinyl-scanner';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
+export const SNAPSHOT_ID = 'avant-v2';
 let dbPromise = null;
+let blockedListener = () => {};
+export function onBlocked(fn) { blockedListener = fn; }
 
 function open() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
+    // Une ancienne version de l'appli ouverte ailleurs empêche la mise à jour de la base
+    req.onblocked = () => blockedListener();
+    req.onupgradeneeded = (event) => {
       const db = req.result;
+      const tx = req.transaction;
+      const oldVersion = event.oldVersion || 0;
       if (!db.objectStoreNames.contains('releases')) {
         const s = db.createObjectStore('releases', { keyPath: 'id' });
         s.createIndex('lastSeenAt', 'lastSeenAt');
@@ -55,9 +75,44 @@ function open() {
         h.createIndex('at', 'at');
         h.createIndex('releaseId', 'releaseId');
       }
+      // ---- Version 2 : nouveaux espaces de stockage (les vinyles ne sont pas touchés) ----
+      if (!db.objectStoreNames.contains('items')) {
+        const it = db.createObjectStore('items', { keyPath: 'key' });
+        it.createIndex('kind', 'kind');
+        it.createIndex('kindColl', ['kind', 'inCollection']);
+        it.createIndex('sourceId', 'sourceId');
+      }
+      if (!db.objectStoreNames.contains('disney')) db.createObjectStore('disney', { keyPath: 'num' });
+      if (!db.objectStoreNames.contains('barcodes')) db.createObjectStore('barcodes', { keyPath: 'code' });
+      if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: 'key' });
+      if (!db.objectStoreNames.contains('snapshots')) db.createObjectStore('snapshots', { keyPath: 'id' });
+
+      // Copie de sécurité des vinyles au passage de la version 1 à la version 2
+      if (oldVersion >= 1 && oldVersion < 2) {
+        const rel = tx.objectStore('releases').getAll();
+        rel.onsuccess = () => {
+          const hist = tx.objectStore('history').getAll();
+          hist.onsuccess = () => {
+            tx.objectStore('snapshots').put({
+              id: SNAPSHOT_ID,
+              createdAt: Date.now(),
+              fromVersion: oldVersion,
+              app: 'vinyl-scanner',
+              dbVersion: 1,
+              releases: rel.result,
+              history: hist.result,
+            });
+          };
+        };
+      }
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      const db = req.result;
+      // Si une future version de l'appli veut mettre la base à jour, on la laisse faire.
+      db.onversionchange = () => { db.close(); dbPromise = null; };
+      resolve(db);
+    };
+    req.onerror = () => { dbPromise = null; reject(req.error); };
   });
   return dbPromise;
 }
@@ -219,35 +274,149 @@ export async function countReleases() {
   return reqToPromise((await store('releases')).count());
 }
 
-/** Sauvegarde complète (JSON). */
-export async function exportAll() {
-  const releases = await reqToPromise((await store('releases')).getAll());
-  const history = await reqToPromise((await store('history')).getAll());
-  return { app: 'vinyl-scanner', dbVersion: DB_VERSION, exportedAt: new Date().toISOString(), releases, history };
+// ---------- Sauvegardes JSON ----------
+//
+// Format (compatible avec la v1) :
+//   { app: 'vinyl-scanner', dbVersion, exportedAt, releases: [], history: [],
+//     items: [], disney: [], barcodes: [] }        ← ces 3 tableaux sont nouveaux et facultatifs
+// Une sauvegarde v1 (releases + history seulement) se restaure toujours.
+// Une ancienne version de l'appli sait lire une sauvegarde v2 (elle ignore les nouveaux tableaux).
+
+const getAllOf = async (name) => reqToPromise((await store(name)).getAll());
+
+/** Sauvegarde : 'all' ou une seule collection ('vinyl' | 'game' | 'dvd' | 'disney'). */
+export async function exportAll(section = 'all') {
+  const out = { app: 'vinyl-scanner', dbVersion: DB_VERSION, exportedAt: new Date().toISOString(), section };
+  if (section === 'all' || section === 'vinyl') {
+    out.releases = await getAllOf('releases');
+    out.history = await getAllOf('history');
+  }
+  if (section === 'all' || section === 'game' || section === 'dvd') {
+    const items = await getAllOf('items');
+    out.items = section === 'all' ? items : items.filter((i) => i.kind === section);
+  }
+  if (section === 'all' || section === 'disney') out.disney = await getAllOf('disney');
+  const barcodes = await getAllOf('barcodes');
+  out.barcodes = section === 'all' ? barcodes : barcodes.filter((b) => b.kind === section);
+  return out;
 }
 
 /**
- * Restaure une sauvegarde JSON. Les fiches du fichier remplacent celles du
- * téléphone ayant le même id ; les autres sont conservées. Pas de doublon d'historique.
+ * Restaure une sauvegarde JSON (complète ou d'une seule collection). Les éléments du
+ * fichier remplacent ceux du téléphone ayant le même identifiant ; les autres sont conservés.
  */
 export async function importBackup(data) {
-  if (!data || data.app !== 'vinyl-scanner' || !Array.isArray(data.releases)) {
+  const arrays = ['releases', 'items', 'disney', 'barcodes'].filter((k) => Array.isArray(data?.[k]));
+  if (!data || data.app !== 'vinyl-scanner' || !arrays.length) {
     throw new Error('Ce fichier n\'est pas une sauvegarde Vinyl Scanner.');
   }
-  const releases = data.releases.filter((r) => r && Number.isFinite(Number(r.id)) && Number(r.id) > 0)
+  const releases = (data.releases || []).filter((r) => r && Number.isFinite(Number(r.id)) && Number(r.id) > 0)
     .map((r) => ({ ...r, id: Number(r.id), inCollection: r.inCollection ? 1 : 0 }));
-  const existingHistory = await reqToPromise((await store('history')).getAll());
+  const existingHistory = await getAllOf('history');
   const seen = new Set(existingHistory.map((h) => `${h.at}|${h.releaseId}`));
   const history = (Array.isArray(data.history) ? data.history : [])
     .filter((h) => h && h.releaseId && h.at && !seen.has(`${h.at}|${h.releaseId}`))
     .map(({ id, ...h }) => h); // nouvel identifiant attribué automatiquement
+  const items = (data.items || []).filter((i) => i && typeof i.key === 'string' && ['game', 'dvd'].includes(i.kind))
+    .map((i) => ({ ...i, inCollection: i.inCollection ? 1 : 0 }));
+  const disney = (data.disney || []).filter((d) => d && Number.isFinite(Number(d.num)))
+    .map((d) => ({ ...d, num: Number(d.num), owned: d.owned ? 1 : 0 }));
+  const barcodes = (data.barcodes || []).filter((b) => b && typeof b.code === 'string' && b.kind);
 
   const db = await open();
-  const tx = db.transaction(['releases', 'history'], 'readwrite');
-  const rs = tx.objectStore('releases');
-  const hs = tx.objectStore('history');
-  releases.forEach((r) => rs.put(r));
-  history.forEach((h) => hs.add(h));
+  const tx = db.transaction(['releases', 'history', 'items', 'disney', 'barcodes'], 'readwrite');
+  releases.forEach((r) => tx.objectStore('releases').put(r));
+  history.forEach((h) => tx.objectStore('history').add(h));
+  items.forEach((i) => tx.objectStore('items').put(i));
+  disney.forEach((d) => tx.objectStore('disney').put(d));
+  barcodes.forEach((b) => tx.objectStore('barcodes').put(b));
   await txDone(tx);
-  return { releases: releases.length, inCollection: releases.filter((r) => r.inCollection).length, history: history.length };
+  return {
+    releases: releases.length,
+    inCollection: releases.filter((r) => r.inCollection).length,
+    history: history.length,
+    games: items.filter((i) => i.kind === 'game' && i.inCollection).length,
+    dvds: items.filter((i) => i.kind === 'dvd' && i.inCollection).length,
+    disney: disney.filter((d) => d.owned).length,
+    barcodes: barcodes.length,
+  };
+}
+
+/** Copie de sécurité faite automatiquement avant la migration v2 (ou null). */
+export async function getSnapshot() {
+  try { return await reqToPromise((await store('snapshots')).get(SNAPSHOT_ID)); } catch { return null; }
+}
+
+// ---------- Jeux vidéo et DVD ----------
+
+export async function getItem(key) {
+  return reqToPromise((await store('items')).get(key));
+}
+
+/** Lecture-modification-écriture d'un jeu / DVD dans une seule transaction. */
+export async function updateItem(key, mutator) {
+  const db = await open();
+  const tx = db.transaction('items', 'readwrite');
+  const s = tx.objectStore('items');
+  let result = null;
+  const get = s.get(key);
+  get.onsuccess = () => {
+    const next = mutator(get.result ? structuredClone(get.result) : undefined);
+    if (next) { result = next; s.put(next); } else { result = get.result || null; }
+  };
+  await txDone(tx);
+  return result;
+}
+
+/** Tous les jeux (ou DVD) ; ownedOnly = seulement ceux de la collection. */
+export async function getItems(kind, { ownedOnly = false } = {}) {
+  const s = await store('items');
+  if (ownedOnly) return reqToPromise(s.index('kindColl').getAll([kind, 1]));
+  return reqToPromise(s.index('kind').getAll(kind));
+}
+
+export async function getItemsBySource(sourceId) {
+  return reqToPromise((await store('items')).index('sourceId').getAll(sourceId));
+}
+
+// ---------- Disney ----------
+
+export async function getDisneyAll() {
+  return reqToPromise((await store('disney')).getAll());
+}
+
+export async function updateDisney(num, mutator) {
+  const db = await open();
+  const tx = db.transaction('disney', 'readwrite');
+  const s = tx.objectStore('disney');
+  let result = null;
+  const get = s.get(Number(num));
+  get.onsuccess = () => {
+    const next = mutator(get.result ? structuredClone(get.result) : { num: Number(num), owned: 0, barcodes: [] });
+    if (next) { result = next; s.put(next); } else { result = get.result || null; }
+  };
+  await txDone(tx);
+  return result;
+}
+
+// ---------- Codes-barres mémorisés ----------
+
+export async function getBarcode(code) {
+  return reqToPromise((await store('barcodes')).get(String(code)));
+}
+export async function setBarcode(code, link) {
+  return reqToPromise((await store('barcodes', 'readwrite')).put({ code: String(code), at: Date.now(), ...link }));
+}
+export async function deleteBarcode(code) {
+  return reqToPromise((await store('barcodes', 'readwrite')).delete(String(code)));
+}
+
+// ---------- Divers ----------
+
+export async function getMeta(key) {
+  const r = await reqToPromise((await store('meta')).get(key));
+  return r ? r.value : undefined;
+}
+export async function setMeta(key, value) {
+  return reqToPromise((await store('meta', 'readwrite')).put({ key, value }));
 }

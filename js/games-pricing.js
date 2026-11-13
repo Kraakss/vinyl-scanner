@@ -210,3 +210,45 @@ export function ebayQuery(title, platformKey) {
   const p = platformByKey(platformKey);
   return `${String(title).replace(/[:™®©]/g, ' ').replace(/\s+/g, ' ').trim()} ${p ? p.ebay : ''}`.trim();
 }
+
+// ---------- Versions françaises / européennes (données IGDB) ----------
+
+/** Champs IGDB à demander pour connaître le titre français, la jaquette européenne et les sorties. */
+export const IGDB_LOCALE_FIELDS = 'alternative_names.name,alternative_names.comment,game_localizations.name,game_localizations.cover.image_id,'
+  + 'game_localizations.region.name,game_localizations.region.identifier,release_dates.platform.name,release_dates.region,release_dates.release_region.region';
+
+const FR_COMMENT = /fran[cç]ais|french|france|\bfr\b/i;
+const FR_REGION = /france|french|\bfr\b/i;
+const EU_REGION = /europe|\beu\b|\bpal\b|france|french|\bfr\b/i;
+const regionText = (l) => `${l?.region?.identifier || ''} ${l?.region?.name || ''}`;
+
+/**
+ * Titre et jaquette à afficher : titre français s'il existe (noms alternatifs ou
+ * localisation France), sinon titre européen, sinon titre d'origine.
+ * Jaquette de la version France/Europe si IGDB en a une, sinon la jaquette standard.
+ */
+export function localizeGame(g) {
+  const frAlt = (g.alternative_names || []).find((a) => a?.name && FR_COMMENT.test(a.comment || ''));
+  const locs = g.game_localizations || [];
+  const frLoc = locs.find((l) => FR_REGION.test(regionText(l)));
+  const euLoc = locs.find((l) => EU_REGION.test(regionText(l)));
+  const locCover = frLoc?.cover?.image_id || euLoc?.cover?.image_id || null;
+  return {
+    title: frAlt?.name || frLoc?.name || euLoc?.name || g.name,
+    originalTitle: g.name,
+    titleSource: frAlt || frLoc ? 'fr' : euLoc?.name ? 'europe' : 'origine',
+    coverId: locCover || g.cover?.image_id || null,
+    coverRegion: locCover ? (frLoc?.cover?.image_id ? 'france' : 'europe') : 'standard',
+  };
+}
+
+/**
+ * Le jeu est-il sorti en Europe sur cette plateforme ?
+ * true = oui (Europe ou monde entier), false = sorti seulement ailleurs, null = inconnu.
+ */
+export function europeanRelease(g, platformKey) {
+  const p = platformByKey(platformKey);
+  const rel = (g.release_dates || []).filter((r) => !p || !r.platform?.name || igdbMatches(p, r.platform.name));
+  if (!rel.length) return null;
+  return rel.some((r) => r.region === 1 || r.region === 8 || /europe|worldwide/i.test(r.release_region?.region || ''));
+}

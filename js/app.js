@@ -7,10 +7,12 @@ import { RARITY_LEVELS } from './rarity.js';
 import * as coll from './collection.js';
 import * as refresh from './refresh.js';
 import * as backend from './core/backend.js';
-import { games, priceJob, gamesCsv } from './games.js';
+import { games, priceJob, gamesCsv, refreshMissingGameInfo } from './games.js';
 import { dvd, dvdCsv } from './dvd.js';
 import { disney, disneyCsv, migrateLegacy as migrateDisney, fetchMissingPosters as fetchDisneyPosters } from './disney.js';
 import { LIVE_CATNO, APP_VERSION } from './config.js';
+import { regionFilterOn, setRegionFilter, regionToggleHtml, discogsCountryRank, importWarning } from './core/region.js';
+import { setBeepEnabled, beepEnabled } from './core/camera.js';
 
 const CACHE_MAX_AGE = 12 * 60 * 60 * 1000; // une fiche de moins de 12 h n'est pas re-téléchargée
 
@@ -137,6 +139,7 @@ async function route() {
   window.scrollTo(0, 0);
 
   if (view === 'home') renderHome();
+  if (view === 'scan') startVinylCam(); // la caméra démarre tout de suite
   if (view === 'collection') renderCollection().then(() => { if (backToCollection) window.scrollTo(0, collectionScroll); });
   if (view === 'stats') renderStats();
 
@@ -232,8 +235,8 @@ const camToggle = $('#cam-toggle');
 const scanStatus = $('#scan-status');
 
 function updateCamUi() {
-  const on = scanner.isRunning();
-  $('.camera').classList.toggle('on', on);
+  const on = scanner.isRunning('reader');
+  $('#view-scan .camera').classList.toggle('on', on);
   camToggle.textContent = on ? 'Arrêter la caméra' : 'Démarrer la caméra';
   camToggle.className = on ? 'btn ghost' : 'btn primary';
 }
@@ -242,28 +245,33 @@ function searchBarcode(code, method = 'barcode') {
   return runSearch(() => api.searchBarcode(code), { label: `code-barres ${code}`, method, query: code });
 }
 
-camToggle.addEventListener('click', async () => {
-  if (scanner.isRunning()) {
-    await scanner.stopCamera();
-    updateCamUi();
-    setStatus(scanStatus, '');
-    return;
-  }
+/** Allume la caméra de l'onglet Scanner (appelé dès l'ouverture de l'onglet). */
+async function startVinylCam() {
+  if (scanner.isRunning('reader')) return;
   camToggle.disabled = true;
   setStatus(scanStatus, "Ouverture de la caméra… (autorise l'accès si le téléphone le demande)");
   try {
     await scanner.startCamera('reader', (code) => {
-      updateCamUi();
       setStatus(scanStatus, `Code lu : ${code}`, 'ok');
       searchBarcode(code);
-    });
-    setStatus(scanStatus, 'Vise le code-barres, bien à plat et éclairé.');
+    }, { onState: updateCamUi });
+    if (scanner.isRunning('reader')) setStatus(scanStatus, "Vise le code-barres. Touche l'image pour faire la mise au point.");
   } catch (e) {
     setStatus(scanStatus, scanner.cameraErrorMessage(e), 'error');
   } finally {
     camToggle.disabled = false;
     updateCamUi();
   }
+}
+
+camToggle.addEventListener('click', async () => {
+  if (scanner.isRunning('reader')) {
+    await scanner.stopCamera();
+    updateCamUi();
+    setStatus(scanStatus, 'Caméra arrêtée.');
+    return;
+  }
+  startVinylCam();
 });
 
 $('#barcode-file').addEventListener('change', async (e) => {
@@ -415,11 +423,19 @@ async function renderResults() {
     $('#results-empty').hidden = true;
     return;
   }
-  const { result, items, label } = searchState;
+  const { result, label } = searchState;
+  // Pressages français d'abord, puis européens ; hors Europe masqués si le filtre est activé
+  const regionOn = regionFilterOn('vinyl');
+  const sorted = searchState.items.map((r, i) => ({ r, i, k: discogsCountryRank(r.country) }))
+    .sort((a, b) => a.k - b.k || a.i - b.i).map((x) => x.r);
+  const items = regionOn ? sorted.filter((r) => discogsCountryRank(r.country) < 3) : sorted;
+  const hidden = sorted.length - items.length;
+  $('#results-region').innerHTML = sorted.length ? regionToggleHtml('vinyl', regionOn, hidden) : '';
   const n = result.total;
   const vinylOnly = result.query?.format === 'Vinyl';
+  const warn = searchState.method === 'barcode' ? importWarning(searchState.query) : null;
   $('#results-summary').textContent = n
-    ? `${num(n)} version${n > 1 ? 's' : ''} ${vinylOnly ? 'vinyle ' : ''}trouvée${n > 1 ? 's' : ''} pour ${label}. Choisis la tienne :`
+    ? `${warn ? `⚠ ${warn} ` : ''}${num(n)} version${n > 1 ? 's' : ''} ${vinylOnly ? 'vinyle ' : ''}trouvée${n > 1 ? 's' : ''} pour ${label}.${items.length ? ' Choisis la tienne :' : ' Aucune pressée en France ou en Europe : désactive le filtre pour les voir.'}`
     : '';
 
   let mine = [];
@@ -444,6 +460,12 @@ async function renderResults() {
   $('#results-more').hidden = result.page >= result.pages;
 }
 
+$('#results-region').addEventListener('click', (e) => {
+  if (!e.target.closest('[data-region-toggle]')) return;
+  setRegionFilter('vinyl', !regionFilterOn('vinyl'));
+  renderResults();
+});
+
 $('#results-list').addEventListener('click', (e) => {
   if (e.target.closest('.item') && searchState) pendingSource = { method: searchState.method, query: searchState.query };
 });
@@ -456,7 +478,7 @@ $('#results-more').addEventListener('click', async () => {
     const next = await api.searchMore(searchState.result.query, searchState.result.page + 1);
     searchState.items = searchState.items.concat(next.items);
     searchState.result = { ...next, total: searchState.result.total };
-    $('#results-list').insertAdjacentHTML('beforeend', next.items.map(resultItem).join(''));
+    await renderResults(); // retri : pressages français d'abord
     btn.hidden = next.page >= next.pages;
   } catch (e) {
     toast(e.message, 'error');
@@ -1116,9 +1138,12 @@ async function renderSettings() {
   input.value = api.getToken();
   setStatus($('#token-status'), api.getToken() ? 'Jeton enregistré sur ce téléphone.' : 'Aucun jeton enregistré.');
   $('#worker-input').value = backend.getWorkerUrl();
+  $('#beep-toggle').checked = beepEnabled();
   renderSettingsStats();
   db.getSnapshot().then((snap) => { $('#snapshot-btn').hidden = !snap; }).catch(() => {});
 }
+
+$('#beep-toggle').addEventListener('change', (e) => { setBeepEnabled(e.target.checked); toast(e.target.checked ? 'Bip activé.' : 'Bip désactivé.'); });
 
 // ---------- Serveur (Cloudflare Worker) ----------
 
@@ -1250,3 +1275,5 @@ renderJob(refresh.getState());
 setTimeout(() => refresh.startBackgroundFill(), 4000);
 // Affiches Disney manquantes (si le serveur est configuré), gardées en cache sur le téléphone
 setTimeout(() => fetchDisneyPosters(), 8000);
+// Jaquettes et titres français manquants des jeux déjà enregistrés
+setTimeout(() => refreshMissingGameInfo(), 12000);

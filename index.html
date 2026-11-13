@@ -229,6 +229,12 @@
         <p class="status" id="token-status" role="status"></p>
       </form>
 
+      <div class="card">
+        <h2>Scan</h2>
+        <label class="switch-row"><input type="checkbox" id="beep-toggle"> <span>Bip sonore à la détection d'un code (le téléphone vibre aussi)</span></label>
+        <p class="help">Dans la caméra : touche l'image pour faire la mise au point, utilise le curseur pour zoomer, ⟲ pour changer d'objectif (le choix est retenu) et ⚡ pour la lampe, quand ton téléphone le permet.</p>
+      </div>
+
       <form class="card form" id="worker-form" autocomplete="off">
         <h2>Serveur des jeux, DVD et Disney</h2>
         <label for="worker-input">Adresse de ton Cloudflare Worker</label>
@@ -278,7 +284,8 @@
         </details>
         <details>
           <summary>Scanner un code-barres</summary>
-          <p>Onglet <strong>Scanner</strong> → « Démarrer la caméra », autorise l'accès, puis vise le code-barres au dos de la pochette, bien à plat et éclairé. La recherche part toute seule. Si ça ne lit pas, utilise « Scanner depuis une photo » ou tape les chiffres.</p>
+          <p>Onglet <strong>Scanner</strong> : la caméra s'allume toute seule (autorise l'accès la première fois). Vise le code-barres : la recherche part toute seule, avec un bip. Touche l'image pour faire la mise au point, utilise le curseur pour zoomer, ⟲ pour changer d'objectif, ⚡ pour la lampe. Si ça ne lit pas, « Scanner depuis une photo » ou tape les chiffres.</p>
+          <p>Les versions françaises / européennes passent en premier ; l'interrupteur « France / Europe uniquement » au-dessus des résultats affiche aussi les imports.</p>
         </details>
         <details>
           <summary>Vinyles : chercher par numéro de catalogue</summary>
@@ -322,6 +329,7 @@
 
     <!-- 4. Résultats multiples -->
     <section class="view" id="view-results" data-title="Résultats" hidden>
+      <div id="results-region"></div>
       <div id="results-own"></div>
       <p class="summary" id="results-summary"></p>
       <ul class="list" id="results-list"></ul>
@@ -344,7 +352,6 @@
 
   <div class="toast" id="toast" role="alert" hidden></div>
 
-  <script src="vendor/html5-qrcode.min.js"></script>
   <script src="vendor/papaparse.min.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>

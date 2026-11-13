@@ -6,9 +6,10 @@ import * as db from '../db.js';
 import * as scanner from '../scanner.js';
 import * as backend from './backend.js';
 import {
-  $, esc, money, num, thumbHtml, deltaHtml, dateFr, dateTimeFr, toast, setStatus, fillSelect, confirmTap,
+  $, esc, money, num, thumbHtml as thumbBase, deltaHtml, dateFr, dateTimeFr, toast, setStatus, fillSelect, confirmTap,
   normalize, ownershipBannerHtml,
 } from './ui.js';
+import { regionFilterOn, setRegionFilter, regionToggleHtml, importWarning } from './region.js';
 
 const DETAIL_MAX_AGE = 7 * 86400 * 1000;
 
@@ -18,6 +19,9 @@ const ICON_COLL = '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="4" height="
 
 export function createMediaSection(cfg) {
   const id = cfg.id; // 'games' | 'dvd'
+  // Image par défaut propre (manette pour les jeux, pellicule pour les films) quand il n'y a pas de jaquette
+  const ph = cfg.placeholder ? ` ${cfg.placeholder}` : '';
+  const thumbHtml = (url, cls = 'thumb') => thumbBase(url, `${cls}${ph}`);
   const P = (name) => `${id}-${name}`; // préfixe des identifiants HTML
   let current = null; // vue affichée
   let searchState = null; // { query, results, note, fromBarcode }
@@ -62,6 +66,7 @@ export function createMediaSection(cfg) {
     </section>
 
     <section class="view" id="view-${P('results')}" hidden>
+      <div id="${P('results-region')}"></div>
       <div id="${P('results-own')}"></div>
       <p class="summary" id="${P('results-summary')}"></p>
       <ul class="list" id="${P('results-list')}"></ul>
@@ -126,9 +131,10 @@ export function createMediaSection(cfg) {
     setTimeout(() => {
       if (v === 'results') renderResults();
       if (v === 'item') openItem(rest);
-      if (v === 'collection') renderCollection();
+      if (v === 'collection') { renderCollection(); cfg.onCollectionView?.(); }
       if (v === 'stats') renderStats();
       if (v === 'search') cfg.onSearchView?.($(`#${P('search-form')}`));
+      if (v === 'scan') startCam(); // la caméra démarre tout de suite
     }, 0);
     return { el: $(`#view-${P(v)}`), title: titles[v], tab, isRoot: ['scan', 'search', 'collection'].includes(v) };
   }
@@ -136,6 +142,24 @@ export function createMediaSection(cfg) {
   async function stopCamera() {
     await scanner.stopCamera();
     updateCamUi();
+  }
+
+  /** Allume la caméra de l'onglet Scanner (appelé dès l'ouverture de l'onglet). */
+  async function startCam() {
+    if (scanner.isRunning(P('reader'))) return;
+    const btn = $(`#${P('cam')}`);
+    const status = $(`#${P('scan-status')}`);
+    btn.disabled = true;
+    setStatus(status, 'Ouverture de la caméra… (autorise l\'accès si le téléphone le demande)');
+    try {
+      await scanner.startCamera(P('reader'), (code) => handleCode(code), { onState: updateCamUi });
+      if (scanner.isRunning(P('reader'))) setStatus(status, 'Vise le code-barres. Touche l\'image pour faire la mise au point.');
+    } catch (e) {
+      setStatus(status, scanner.cameraErrorMessage(e), 'error');
+    } finally {
+      btn.disabled = false;
+      updateCamUi();
+    }
   }
 
   const go = (hash) => { if (location.hash === hash) window.dispatchEvent(new HashChangeEvent('hashchange')); else location.hash = hash; };
@@ -228,10 +252,18 @@ export function createMediaSection(cfg) {
       $(`#${P('results-own')}`).innerHTML = '';
       return;
     }
-    const { query, results, note, fromBarcode } = searchState;
+    const { query, note, fromBarcode } = searchState;
     cfg.fillSearchForm($(`#${P('refine-form')}`), query);
+    // France / Europe d'abord ; hors Europe masqué si le filtre est activé
+    const regionOn = regionFilterOn(id);
+    const rank = (r) => (r.eu === true ? 0 : r.eu === false ? 2 : 1);
+    const sorted = searchState.results.map((r, i) => ({ r, i })).sort((a, b) => rank(a.r) - rank(b.r) || a.i - b.i).map((x) => x.r);
+    const results = regionOn ? sorted.filter((r) => r.eu !== false) : sorted;
+    const hiddenCount = sorted.length - results.length;
+    $(`#${P('results-region')}`).innerHTML = sorted.some((r) => r.eu !== undefined && r.eu !== null) ? regionToggleHtml(id, regionOn, hiddenCount) : '';
     const n = results.length;
-    $(`#${P('results-summary')}`).textContent = `${fromBarcode ? `Code ${fromBarcode.code} → « ${fromBarcode.title} ». ` : ''}${n ? `${n} résultat${n > 1 ? 's' : ''} pour « ${query.title} »${cfg.queryLabel ? cfg.queryLabel(query) : ''}. Choisis le bon :` : ''}${note ? ` ${note}` : ''}`;
+    const warn = fromBarcode ? importWarning(fromBarcode.code) : null;
+    $(`#${P('results-summary')}`).textContent = `${fromBarcode ? `Code ${fromBarcode.code} → « ${fromBarcode.title} ». ` : ''}${warn ? `⚠ ${warn} ` : ''}${n ? `${n} résultat${n > 1 ? 's' : ''} pour « ${query.title} »${cfg.queryLabel ? cfg.queryLabel(query) : ''}. Choisis le bon :` : hiddenCount ? 'Tous les résultats sont hors Europe : désactive le filtre pour les voir.' : ''}${note ? ` ${note}` : ''}`;
     $(`#${P('results-empty')}`).hidden = n > 0;
     const owned = await db.getItems(cfg.kind, { ownedOnly: true }).catch(() => []);
     if (current !== 'results') return;
@@ -355,7 +387,7 @@ export function createMediaSection(cfg) {
         </div>`;
     box.innerHTML = `
       <div class="hero portrait">
-        ${item.coverUrl ? `<img class="cover poster" src="${esc(item.coverUrl)}" alt="" referrerpolicy="no-referrer" onerror="this.removeAttribute('src')">` : '<div class="cover poster placeholder" aria-hidden="true"></div>'}
+        ${item.coverUrl ? `<img class="cover poster${ph}" src="${esc(item.coverUrl)}" alt="" referrerpolicy="no-referrer" onerror="this.removeAttribute('src')">` : `<div class="cover poster placeholder${ph}" aria-hidden="true"></div>`}
         <div class="hero-text">
           <div class="artist">${esc(cfg.heroKicker(item))}</div>
           <h2>${esc(item.title)}</h2>
@@ -544,20 +576,8 @@ export function createMediaSection(cfg) {
 
   function bind() {
     $(`#${P('cam')}`).addEventListener('click', async () => {
-      const btn = $(`#${P('cam')}`);
-      const status = $(`#${P('scan-status')}`);
-      if (scanner.isRunning(P('reader'))) { await stopCamera(); setStatus(status, ''); return; }
-      btn.disabled = true;
-      setStatus(status, 'Ouverture de la caméra… (autorise l\'accès si le téléphone le demande)');
-      try {
-        await scanner.startCamera(P('reader'), (code) => { updateCamUi(); handleCode(code); });
-        setStatus(status, 'Vise le code-barres, bien à plat et éclairé.');
-      } catch (e) {
-        setStatus(status, scanner.cameraErrorMessage(e), 'error');
-      } finally {
-        btn.disabled = false;
-        updateCamUi();
-      }
+      if (scanner.isRunning(P('reader'))) { await stopCamera(); setStatus($(`#${P('scan-status')}`), 'Caméra arrêtée.'); return; }
+      startCam();
     });
     $(`#${P('scan-file')}`).addEventListener('change', async (e) => {
       const file = e.target.files[0];
@@ -578,6 +598,12 @@ export function createMediaSection(cfg) {
       runSearch(cfg.readSearchForm(e.target), { fromBarcode: searchState?.fromBarcode || null });
     });
     $(`#${P('results-list')}`).addEventListener('click', () => { fromCollection = false; });
+    $(`#${P('results-region')}`).addEventListener('click', (e) => {
+      const b = e.target.closest('[data-region-toggle]');
+      if (!b) return;
+      setRegionFilter(id, !regionFilterOn(id));
+      renderResults();
+    });
 
     let t;
     $(`#${P('coll-search')}`).addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { view.q = e.target.value; saveView(); renderCollectionList(); }, 150); });

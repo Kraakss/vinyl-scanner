@@ -30,6 +30,28 @@ Ces trois collections passent par un petit serveur gratuit (Cloudflare Worker) q
 
 L'écran d'**Accueil** affiche les 4 collections. Chaque bloc a son bouton **Scanner** et son bouton **Collection**. La barre du bas change selon la collection où tu te trouves (Accueil et Réglages sont toujours là).
 
+### La caméra (toutes les collections)
+- **Démarrage et arrêt automatiques** : la caméra s'allume dès que tu ouvres un onglet **Scanner**, sans bouton à toucher. Le téléphone demande l'autorisation la première fois. Elle s'éteint quand tu quittes l'onglet ou l'appli, pour économiser la batterie, et se rallume quand tu reviens.
+- **Objectif principal** : l'appli le choisit toute seule, pas l'ultra grand-angle ni le téléobjectif. Elle demande une bonne résolution (jusqu'à 1920×1080) et l'autofocus continu.
+- **Sur l'image** :
+  - **toucher** = mise au point à cet endroit ;
+  - **curseur** = zoom, pour scanner de plus loin sans flou ;
+  - **⟲** = changer d'objectif (le choix est retenu) ;
+  - **⚡** = lampe.
+
+  Ces outils n'apparaissent que si le téléphone les propose.
+- **Lecture** : le lecteur de codes-barres intégré au navigateur sur Android (rapide), sinon la bibliothèque ZXing (iPhone).
+- **Signal** : bip et vibration à chaque code lu. Le bip se coupe dans **Réglages → Scan**.
+
+### France / Europe en priorité
+Dans chaque collection, un interrupteur **« France / Europe uniquement »**, activé par défaut, se désactive d'un toucher, par exemple pour un import :
+- **Vinyles** : les pressages français s'affichent en premier, puis les européens. Les pressages hors d'Europe (US, Japon…) sont masqués.
+- **Jeux vidéo** : titre français quand IGDB en a un, jaquette européenne ou française si elle existe, sinon la jaquette standard. Les jeux sortis seulement hors d'Europe sur la plateforme choisie sont masqués.
+- **DVD** : titres, résumés et affiches en français (repli sur l'anglais si TMDB n'a pas de version française). Les films sortis seulement hors d'Europe sont masqués.
+- **Disney** : la liste est déjà la liste française ; l'interrupteur te prévient quand un code-barres vient d'une édition étrangère.
+
+Dans toutes les collections, un code-barres enregistré hors d'Europe (États-Unis, Japon…) affiche un avertissement « édition importée probable ».
+
 ### Vinyles (inchangé)
 - **Scanner** : code-barres au dos de la pochette.
 - **N° cat.** : **« Scanner le n° en direct »**. Place le numéro de catalogue dans le cadre. Les numéros lus apparaissent en boutons ; touche le bon, la recherche Discogs part toute seule. La lampe ⚡ s'affiche si ton téléphone le permet. Tu peux aussi taper le numéro, ou utiliser « Lire le n° sur une photo ».
@@ -173,7 +195,10 @@ GitHub Pages republie en 1 à 2 minutes. Sur le téléphone, ferme puis rouvre l
 | `js/livecatno.js`, `js/config.js` | Scan du n° de catalogue en direct (désactivable) |
 | `js/discogs.js`, `js/collection.js`, `js/refresh.js`, `js/rarity.js` | Vinyles : Discogs, collection, prix, rareté |
 | `js/db.js` | Base IndexedDB (version 2) |
-| `js/scanner.js`, `js/ocr.js` | Codes-barres (html5-qrcode) et lecture de texte (Tesseract.js) |
+| `js/core/camera.js` | Caméra commune : choix de l'objectif principal, autofocus, mise au point au toucher, zoom, lampe, bip |
+| `js/scanner.js`, `vendor/zxing.min.js` | Codes-barres : détecteur natif du navigateur (Android) ou ZXing (iPhone…) |
+| `js/core/region.js` | Priorité France / Europe : pays des pressages, pays d'origine des codes-barres |
+| `js/ocr.js` | Lecture de texte (Tesseract.js) |
 | `worker/worker.js` | Cloudflare Worker (IGDB, eBay, TMDB, codes-barres) |
 
 ### Données (IndexedDB `vinyl-scanner`, version 2)

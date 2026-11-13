@@ -11,6 +11,7 @@ import * as backend from './core/backend.js';
 import { $, esc, num, dateFr, toast, setStatus, confirmTap, simplify, toCsv, today } from './core/ui.js';
 import { detectFormat } from './dvd.js';
 import { LEGACY_V20 } from './disney-legacy.js';
+import { regionFilterOn, setRegionFilter, regionToggleHtml, importWarning } from './core/region.js';
 
 const DATA_URL = 'data/disney-classiques.json';
 const POSTERS_KEY = 'disney_posters_v2';
@@ -171,6 +172,7 @@ export function mount(main) {
       <div class="camera-idle">${ICON_SCAN.replace('<svg', '<svg class="big-icon"')}<p>Scan en série : la caméra reste allumée</p></div></div>
     <p class="status" id="disney-scan-status" role="status"></p>
     <div class="actions"><button class="btn primary" id="disney-cam">Démarrer la caméra</button></div>
+    <div id="disney-region"></div>
     <div id="disney-answer"></div>
     <form class="card form" id="disney-code-form" autocomplete="off">
       <label for="disney-code-input">Ou tape le code-barres</label>
@@ -194,7 +196,7 @@ export async function route(parts) {
   setTimeout(() => {
     if (v === 'grid') { renderGrid(); fetchMissingPosters(); }
     if (v === 'film') renderFilm(filmId);
-    if (v === 'scan') updateCamUi();
+    if (v === 'scan') { updateCamUi(); renderRegionBar(); startCam(); } // la caméra démarre tout de suite
   }, 0);
   const titles = { grid: 'Classiques Disney', scan: 'Disney · Scanner', film: 'Disney' };
   return { el: $(`#view-disney-${v}`), title: titles[v], tab: v === 'film' ? null : v, isRoot: v !== 'film' };
@@ -379,6 +381,23 @@ export function bestMatches(titles, list = films) {
   return scored.slice(0, 3).map((x) => x.f);
 }
 
+/** Allume la caméra du scan en série (appelé dès l'ouverture de l'onglet). */
+async function startCam() {
+  if (scanner.isRunning('disney-reader')) return;
+  const status = $('#disney-scan-status');
+  $('#disney-cam').disabled = true;
+  setStatus(status, 'Ouverture de la caméra… (autorise l\'accès si le téléphone le demande)');
+  try {
+    await scanner.startCamera('disney-reader', handleCode, { continuous: true, onState: updateCamUi });
+    if (scanner.isRunning('disney-reader')) setStatus(status, 'Vise le code-barres : la réponse s\'affiche tout de suite. Touche l\'image pour faire le point.');
+  } catch (e) {
+    setStatus(status, scanner.cameraErrorMessage(e), 'error');
+  } finally {
+    $('#disney-cam').disabled = false;
+    updateCamUi();
+  }
+}
+
 function updateCamUi() {
   const btn = $('#disney-cam');
   if (!btn) return;
@@ -403,7 +422,8 @@ async function handleCode(code) {
   const guesses = titles.length ? bestMatches(titles) : [];
   const released = films.filter(isReleased);
   const option = (f) => `<option value="${esc(f.id)}">${esc(f.n ? `${f.n}. ${f.titre}` : `${f.titre} (${f.annee})`)}</option>`;
-  box.innerHTML = `<div class="card dask">
+  const warnAsk = regionFilterOn('disney') ? importWarning(code) : null;
+  box.innerHTML = `${warnAsk ? `<p class="import-warn">⚠ ${esc(warnAsk)}</p>` : ''}<div class="card dask">
     <strong>Quel film Disney est-ce ?</strong>
     ${titles.length ? `<p class="help">Produit trouvé : « ${esc(titles[0])} »</p>` : `<p class="help">${backend.isConfigured() ? 'Produit introuvable dans les bases gratuites.' : 'Serveur non configuré : choisis dans la liste.'}</p>`}
     ${guesses.map((f) => `<button class="btn primary block" data-pick="${esc(f.id)}">${esc(label(f))}</button>`).join('')}
@@ -427,6 +447,11 @@ async function handleCode(code) {
   $('#disney-not').addEventListener('click', () => { box.innerHTML = ''; setStatus($('#disney-scan-status'), 'Ignoré. Prêt pour le suivant.'); });
 }
 
+function renderRegionBar() {
+  const on = regionFilterOn('disney');
+  $('#disney-region').innerHTML = `${regionToggleHtml('disney', on)}<p class="help region-help">${on ? "Activé : l'appli te prévient quand un code-barres vient d'une édition étrangère (import)." : "Désactivé : pas d'avertissement pour les éditions importées."}</p>`;
+}
+
 async function showAnswer(code, id, titles = []) {
   const f = filmById(id);
   const d = (await ownedMap()).get(id);
@@ -436,11 +461,11 @@ async function showAnswer(code, id, titles = []) {
   const poster = (cls) => `<div class="dposter mini ${cls}">${url ? `<img src="${esc(url)}" alt="" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}<span class="dph">${esc(f.titre)}</span>${badge}${cls.startsWith('owned') ? '<span class="dcheck">✓</span>' : LOCK}</div>`;
   const where = f.n ? `n°${f.n}` : 'hors numérotation';
   if (d?.owned) {
-    box.innerHTML = `<div class="answer same" role="alert">${poster('owned')}<div><strong>Vous l'avez déjà (${where})</strong><span>${esc(f.titre)}${d.format ? ` · ${esc(d.format)}` : ''}</span>
+    box.innerHTML = `${warnHtml(code)}<div class="answer same" role="alert">${poster('owned')}<div><strong>Vous l'avez déjà (${where})</strong><span>${esc(f.titre)}${d.format ? ` · ${esc(d.format)}` : ''}</span>
       <a class="linklike" href="${href(f)}">Voir la fiche</a></div></div>`;
     if (navigator.vibrate) navigator.vibrate([60, 60, 60]);
   } else {
-    box.innerHTML = `<div class="answer new" role="alert">${poster('missing')}<div><strong>Vous ne l'avez pas</strong><span>${esc(label(f))}</span>
+    box.innerHTML = `${warnHtml(code)}<div class="answer new" role="alert">${poster('missing')}<div><strong>Vous ne l'avez pas</strong><span>${esc(label(f))}</span>
       <button class="btn primary" id="disney-answer-add">Ajouter</button></div></div>`;
     $('#disney-answer-add').addEventListener('click', async () => {
       await setOwned(id, true, { format: d?.format || (titles.length ? detectFormat(titles.join(' ')) : 'DVD') });
@@ -452,7 +477,17 @@ async function showAnswer(code, id, titles = []) {
   setStatus($('#disney-scan-status'), scanner.isRunning('disney-reader') ? 'Prêt pour le suivant : vise un autre code-barres.' : '');
 }
 
+const warnHtml = (code) => {
+  const w = regionFilterOn('disney') ? importWarning(code) : null;
+  return w ? `<p class="import-warn">⚠ ${esc(w)}</p>` : '';
+};
+
 function bind() {
+  $('#disney-region').addEventListener('click', (e) => {
+    if (!e.target.closest('[data-region-toggle]')) return;
+    setRegionFilter('disney', !regionFilterOn('disney'));
+    renderRegionBar();
+  });
   $('#disney-filter').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-f]');
     if (!b) return;
@@ -465,19 +500,8 @@ function bind() {
   let t;
   $('#disney-search').addEventListener('input', (e) => { clearTimeout(t); t = setTimeout(() => { view.q = e.target.value; saveView(); renderGrid(); }, 150); });
   $('#disney-cam').addEventListener('click', async () => {
-    const status = $('#disney-scan-status');
-    if (scanner.isRunning('disney-reader')) { await leave(); setStatus(status, ''); return; }
-    $('#disney-cam').disabled = true;
-    setStatus(status, 'Ouverture de la caméra… (autorise l\'accès si le téléphone le demande)');
-    try {
-      await scanner.startCamera('disney-reader', handleCode, { continuous: true });
-      setStatus(status, 'Vise le code-barres : la réponse s\'affiche tout de suite.');
-    } catch (e) {
-      setStatus(status, scanner.cameraErrorMessage(e), 'error');
-    } finally {
-      $('#disney-cam').disabled = false;
-      updateCamUi();
-    }
+    if (scanner.isRunning('disney-reader')) { await leave(); setStatus($('#disney-scan-status'), 'Caméra arrêtée.'); return; }
+    startCam();
   });
   $('#disney-code-form').addEventListener('submit', (e) => {
     e.preventDefault();

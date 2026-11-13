@@ -4,11 +4,14 @@
 // améliorée (gris + contraste) et lue par Tesseract.js dans un « worker » (le
 // téléphone reste fluide). Les textes qui ressemblent à un n° de catalogue
 // apparaissent en boutons : un toucher lance la recherche Discogs.
+// La caméra (bon objectif, autofocus, mise au point au toucher, zoom, lampe) est
+// celle de core/camera.js, commune à toute l'appli.
 //
 // Module isolé : pour le retirer, mettre LIVE_CATNO à false dans js/config.js
 // (le mode « photo » reste disponible), voire supprimer ce fichier.
 
 import { getWorker, extractCandidates } from './ocr.js';
+import { createCamera, detectionFeedback } from './core/camera.js';
 
 const WHITELIST = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-./ ';
 const FRAME = { w: 0.86, h: 0.3 }; // taille du cadre de visée (part de la zone vidéo)
@@ -17,56 +20,41 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 
 export function createLiveCatno(root, { onPick, onStatus = () => {} }) {
   root.innerHTML = `
-    <div class="live-cam" hidden>
-      <video playsinline muted autoplay></video>
-      <div class="live-frame" style="width:${FRAME.w * 100}%;height:${FRAME.h * 100}%"><span></span></div>
-      <button type="button" class="live-torch" hidden aria-label="Lampe torche">
-        <svg viewBox="0 0 24 24"><path d="M9 2h6l-1 7h3l-7 13 1-9H8z"/></svg></button>
-    </div>
+    <div class="live-cam" hidden></div>
     <div class="live-chips chips" aria-live="polite"></div>
     <button type="button" class="btn primary block live-toggle">Scanner le n° en direct</button>`;
-  const cam = root.querySelector('.live-cam');
-  const video = root.querySelector('video');
+  const camBox = root.querySelector('.live-cam');
   const chipsBox = root.querySelector('.live-chips');
   const toggle = root.querySelector('.live-toggle');
-  const torchBtn = root.querySelector('.live-torch');
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const cam = createCamera(camBox, { frame: FRAME, frameClass: 'text' });
 
-  let stream = null;
   let running = false;
   let worker = null;
-  let torchOn = false;
   let seen = new Map(); // texte → { count, last }
   let frames = 0;
+  let loopTimer = null;
 
   async function start() {
     if (running) return;
-    if (!navigator.mediaDevices?.getUserMedia) { onStatus('Caméra non disponible sur ce navigateur.', 'error'); return; }
     toggle.disabled = true;
     onStatus('Ouverture de la caméra… (autorise l\'accès si le téléphone le demande)');
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
-      });
-      video.srcObject = stream;
-      cam.hidden = false;
-      await video.play().catch(() => {});
+      camBox.hidden = false;
       running = true;
-      setupTorch();
+      await cam.start();
+      if (!running) { cam.stop(); return; }
       onStatus('Préparation de la lecture (la 1re fois : ~5 Mo à télécharger)…');
       worker = await getWorker(({ status }) => onStatus(status));
       if (!running) return;
       await worker.setParameters({ tessedit_char_whitelist: WHITELIST, tessedit_pageseg_mode: '6' });
-      onStatus('Place le n° de catalogue dans le cadre. Touche le bon numéro quand il apparaît.');
+      onStatus('Place le n° de catalogue dans le cadre. Touche l\'image pour faire le point. Touche le bon numéro quand il apparaît.');
       seen = new Map();
       frames = 0;
       loop();
     } catch (e) {
       console.warn('[scan n° en direct]', e);
-      const msg = String(e?.message || e);
-      onStatus(/NotAllowed|Permission|denied/i.test(msg) ? 'Accès à la caméra refusé. Autorise-la dans les réglages du navigateur.' : `Impossible de démarrer : ${msg}`, 'error');
+      const msg = `${e?.name || ''} ${e?.message || e}`;
+      onStatus(/NotAllowed|Permission|denied/i.test(msg) ? 'Accès à la caméra refusé. Autorise-la dans les réglages du navigateur.' : `Impossible de démarrer : ${msg.trim()}`, 'error');
       await stop();
     } finally {
       toggle.disabled = false;
@@ -74,47 +62,12 @@ export function createLiveCatno(root, { onPick, onStatus = () => {} }) {
     }
   }
 
-  function setupTorch() {
-    const track = stream?.getVideoTracks?.()[0];
-    let caps = {};
-    try { caps = track?.getCapabilities?.() || {}; } catch { /* non supporté */ }
-    torchBtn.hidden = !caps.torch;
-  }
-
-  async function setTorch(on) {
-    const track = stream?.getVideoTracks?.()[0];
-    if (!track) return;
-    try {
-      await track.applyConstraints({ advanced: [{ torch: on }] });
-      torchOn = on;
-      torchBtn.classList.toggle('on', on);
-    } catch { torchBtn.hidden = true; }
-  }
-
-  /** Découpe la zone du cadre dans l'image vidéo (en tenant compte du recadrage « cover »). */
+  /** Zone du cadre, en gris contrasté, à la bonne taille pour la lecture. */
   function grabFrame() {
-    const vw = video.videoWidth;
-    const vh = video.videoHeight;
-    const bw = video.clientWidth;
-    const bh = video.clientHeight;
-    if (!vw || !vh || !bw || !bh) return false;
-    const scale = Math.max(bw / vw, bh / vh);
-    const offX = (bw - vw * scale) / 2;
-    const offY = (bh - vh * scale) / 2;
-    const fw = bw * FRAME.w;
-    const fh = bh * FRAME.h;
-    const sx = ((bw - fw) / 2 - offX) / scale;
-    const sy = ((bh - fh) / 2 - offY) / scale;
-    const sw = fw / scale;
-    const sh = fh / scale;
-    // Taille de travail : assez grande pour lire, assez petite pour aller vite
-    const outW = Math.min(1100, Math.max(600, sw));
-    const outH = Math.round(outW * (sh / sw));
-    canvas.width = outW;
-    canvas.height = outH;
-    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, outW, outH);
-    // Gris + contraste
-    const img = ctx.getImageData(0, 0, outW, outH);
+    const region = cam.grabRegion(1100, 600);
+    if (!region) return null;
+    const { canvas, ctx } = region;
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const px = img.data;
     let min = 255; let max = 0;
     for (let i = 0; i < px.length; i += 4) {
@@ -129,12 +82,13 @@ export function createLiveCatno(root, { onPick, onStatus = () => {} }) {
       px[i] = px[i + 1] = px[i + 2] = v;
     }
     ctx.putImageData(img, 0, 0);
-    return true;
+    return canvas;
   }
 
   async function loop() {
     if (!running) return;
-    if (document.visibilityState === 'visible' && grabFrame()) {
+    const canvas = document.visibilityState === 'visible' && cam.isRunning() ? grabFrame() : null;
+    if (canvas) {
       try {
         const { data } = await worker.recognize(canvas);
         if (!running) return;
@@ -148,7 +102,7 @@ export function createLiveCatno(root, { onPick, onStatus = () => {} }) {
         renderChips();
       } catch { /* image illisible : on continue */ }
     }
-    setTimeout(loop, 120);
+    loopTimer = setTimeout(loop, 120);
   }
 
   let shownKey = '';
@@ -159,21 +113,21 @@ export function createLiveCatno(root, { onPick, onStatus = () => {} }) {
     const list = [...seen.entries()].filter(([, v]) => v.count >= 2).slice(0, 6).map(([t]) => t);
     const key = list.join('\u0000');
     if (key === shownKey) return;
+    const added = list.some((t) => !shownKey.split('\u0000').includes(t));
     shownKey = key;
     const existing = new Map([...chipsBox.querySelectorAll('.live-chip')].map((b) => [b.dataset.v, b]));
     existing.forEach((b, v) => { if (!list.includes(v)) b.remove(); });
     list.forEach((t) => {
       if (!existing.has(t)) chipsBox.insertAdjacentHTML('beforeend', `<button type="button" class="chip live-chip" data-v="${esc(t)}">${esc(t)}</button>`);
     });
+    if (added && navigator.vibrate) navigator.vibrate(30);
   }
 
   async function stop() {
     running = false;
-    if (torchOn) await setTorch(false);
-    stream?.getTracks().forEach((t) => t.stop());
-    stream = null;
-    video.srcObject = null;
-    cam.hidden = true;
+    clearTimeout(loopTimer);
+    cam.stop();
+    camBox.hidden = true;
     chipsBox.innerHTML = '';
     shownKey = '';
     // Le moteur sert aussi au mode photo : on retire la liste de caractères autorisés
@@ -187,14 +141,16 @@ export function createLiveCatno(root, { onPick, onStatus = () => {} }) {
   }
 
   toggle.addEventListener('click', () => (running ? stop() : start()));
-  torchBtn.addEventListener('click', () => setTorch(!torchOn));
   chipsBox.addEventListener('click', async (e) => {
     const chip = e.target.closest('.live-chip');
     if (!chip) return;
     const value = chip.dataset.v;
+    detectionFeedback();
     await stop();
     onPick(value);
   });
+  // Appli en arrière-plan : caméra éteinte (batterie)
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && running) stop(); });
 
   return { start, stop, isRunning: () => running };
 }

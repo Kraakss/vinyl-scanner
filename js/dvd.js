@@ -2,6 +2,7 @@
 
 import * as backend from './core/backend.js';
 import { createMediaSection } from './core/media.js';
+import { EU_ISO } from './core/region.js';
 import { esc, num, dateFr, thumbHtml, hbarsHtml, vbarsHtml, tilesHtml, simplify, toCsv } from './core/ui.js';
 
 const FORMATS = [['DVD', 'DVD'], ['Blu-ray', 'Blu-ray'], ['Blu-ray 4K', 'Blu-ray 4K Ultra HD'], ['Blu-ray 3D', 'Blu-ray 3D'], ['VHS', 'VHS'], ['Autre', 'Autre']];
@@ -19,6 +20,23 @@ export function detectFormat(text) {
   return 'DVD';
 }
 let scannedFormat = '';
+
+/**
+ * Sortie en France / Europe d'après les dates de sortie TMDB par pays.
+ * true = sorti en France ou en Europe, false = sorti seulement ailleurs, null = inconnu.
+ */
+export function europeanReleaseFromDates(data) {
+  const countries = (data?.results || []).map((r) => r.iso_3166_1);
+  if (!countries.length) return null;
+  return countries.some((c) => EU_ISO.has(c));
+}
+
+/** Affiche française en priorité (images TMDB), sinon l'affiche par défaut. */
+export function pickPoster(d) {
+  const posters = d?.images?.posters || [];
+  const fr = posters.find((x) => x.iso_639_1 === 'fr');
+  return { path: fr?.file_path || d?.poster_path || null, french: !!fr };
+}
 
 const byTitle = (a, b) => (a.sortTitle || a.title || '').localeCompare(b.sortTitle || b.title || '', 'fr', { sensitivity: 'base', numeric: true });
 const nullsLast = (a, b, cmp) => (a == null ? (b == null ? 0 : 1) : b == null ? -1 : cmp(a, b));
@@ -59,6 +77,14 @@ export const dvd = createMediaSection({
       };
     });
     if (y) results.sort((a, b) => (b.year === y) - (a.year === y));
+    // France / Europe : on vérifie les dates de sortie des premiers films (réponses gardées 7 jours par le serveur)
+    await Promise.all(results.slice(0, 12).map(async (r) => {
+      if (!r.sourceId.startsWith('movie-')) { r.eu = null; return; }
+      try {
+        r.eu = europeanReleaseFromDates(await backend.tmdb(`movie/${r.sourceId.slice(6)}/release_dates`, { language: '' }));
+        if (r.eu === false) r.meta.push('Hors Europe');
+      } catch { r.eu = null; }
+    }));
     return { results };
   },
 
@@ -69,7 +95,18 @@ export const dvd = createMediaSection({
 
   async fetchDetails(sourceId) {
     const [type, id] = sourceId.split('-');
-    const d = await backend.tmdb(`${type}/${id}`, { append_to_response: 'credits' });
+    // Textes et affiche en français (fr-FR) ; repli sur l'anglais si le français manque
+    const d = await backend.tmdb(`${type}/${id}`, { append_to_response: 'credits,images', include_image_language: 'fr,null,en' });
+    const frenchSummary = !!d.overview;
+    if (!d.overview || !(d.title || d.name)) {
+      try {
+        const en = await backend.tmdb(`${type}/${id}`, { language: 'en-US' });
+        d.overview = d.overview || en.overview || '';
+        d.title = d.title || en.title;
+        d.name = d.name || en.name;
+      } catch { /* on garde ce qu'on a */ }
+    }
+    const poster = pickPoster(d);
     const people = type === 'movie'
       ? (d.credits?.crew || []).filter((c) => c.job === 'Director').map((c) => c.name)
       : (d.created_by || []).map((c) => c.name);
@@ -80,10 +117,11 @@ export const dvd = createMediaSection({
       sortTitle: simplify(title),
       originalTitle: d.original_title || d.original_name || '',
       year: yearOf(type === 'movie' ? d.release_date : d.first_air_date),
-      coverUrl: backend.tmdbImage(d.poster_path, 'w342'),
-      thumbUrl: backend.tmdbImage(d.poster_path, 'w154'),
+      coverUrl: backend.tmdbImage(poster.path, 'w342'),
+      thumbUrl: backend.tmdbImage(poster.path, 'w154'),
+      posterFrench: poster.french,
       genres: (d.genres || []).map((g) => g.name),
-      summary: d.overview || '',
+      summary: d.overview ? `${d.overview}${frenchSummary ? '' : '\n\n(Résumé en anglais : pas encore traduit sur TMDB.)'}` : '',
       people,
       runtime: d.runtime || (d.episode_run_time || [])[0] || null,
       seasons: d.number_of_seasons || null,
@@ -106,6 +144,7 @@ export const dvd = createMediaSection({
     ${it.seasons ? `<dt>Saisons</dt><dd>${esc(it.seasons)}</dd>` : ''}
     ${it.genres?.length ? `<dt>Genres</dt><dd><div class="tags">${it.genres.map((g) => `<span class="tag">${esc(g)}</span>`).join('')}</div></dd>` : ''}
     ${it.barcodes?.length ? `<dt>Code-barres</dt><dd>${it.barcodes.map(esc).join('<br>')}</dd>` : ''}`,
+  placeholder: 'ph-film',
   externalLink: (it) => it.tmdbUrl,
   externalLabel: 'Voir sur TMDB',
 

@@ -16,9 +16,9 @@
 // Variable facultative :
 //   ALLOWED_ORIGINS  (par défaut https://kraakss.github.io) — sites autorisés à utiliser ce Worker
 
-const VERSION = 1;
+const VERSION = 2;
 const IGDB_ENDPOINTS = new Set(['games', 'platforms', 'covers', 'genres', 'search']);
-const TMDB_PATHS = /^(search\/(movie|tv|multi)|movie\/\d+|tv\/\d+|configuration)$/;
+const TMDB_PATHS = /^(search\/(movie|tv|multi)|movie\/\d+(\/release_dates)?|tv\/\d+|configuration)$/;
 
 // Jetons d'accès gardés en mémoire (renouvelés automatiquement)
 const tokens = { twitch: null, twitchExp: 0, ebay: null, ebayExp: 0 };

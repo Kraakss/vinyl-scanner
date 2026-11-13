@@ -7,6 +7,7 @@ import { createMediaSection } from './core/media.js';
 import { esc, money, num, dateFr, dateTimeFr, deltaHtml, thumbHtml, hbarsHtml, tilesHtml, simplify, toCsv, frNumber } from './core/ui.js';
 import {
   PLATFORMS, platformByKey, igdbMatches, detectPlatforms, estimatePrice, ebayQuery, COMPLETENESS, BASIS_LABELS,
+  IGDB_LOCALE_FIELDS, localizeGame, europeanRelease,
 } from './games-pricing.js';
 
 const cover = (imageId, size = 't_cover_big') => (imageId ? `https://images.igdb.com/igdb/image/upload/${size}/${imageId}.jpg` : '');
@@ -32,11 +33,78 @@ function platformSelect(name, selected, { required = true, autoLabel = '' } = {}
 // ---------- Prix ----------
 
 async function fetchPrice(item) {
-  const q = ebayQuery(item.title, item.platform);
-  const res = await backend.ebaySearch({ q, limit: 150 });
   const region = !item.collection?.region || item.collection.region.startsWith('PAL') ? 'PAL' : 'other';
-  const est = estimatePrice(res.items || [], { title: item.title, platformKey: item.platform, region, completeness: item.collection?.completeness || 'complet' });
-  return { ...est, query: q, totalListings: res.total || 0, fetchedAt: Date.now() };
+  const completeness = item.collection?.completeness || 'complet';
+  const run = async (title) => {
+    const q = ebayQuery(title, item.platform);
+    const res = await backend.ebaySearch({ q, limit: 150 });
+    const est = estimatePrice(res.items || [], { title, platformKey: item.platform, region, completeness });
+    return { ...est, query: q, totalListings: res.total || 0, fetchedAt: Date.now() };
+  };
+  // Titre français d'abord ; s'il y a trop peu d'annonces, on essaie le titre d'origine
+  let best = await run(item.title);
+  if ((!best.ok || best.count < 3) && item.originalTitle && simplify(item.originalTitle) !== simplify(item.title)) {
+    const other = await run(item.originalTitle);
+    if (other.count > best.count) best = other;
+  }
+  return best;
+}
+
+// ---------- Jaquettes et titres français manquants (jeux déjà enregistrés) ----------
+
+let coversRunning = false;
+let coversAgain = false; // nouvelle demande pendant un passage : on refait un tour à la fin
+/** Récupère en arrière-plan jaquette et titre français des jeux qui n'en ont pas encore. */
+export async function refreshMissingGameInfo() {
+  if (!backend.isConfigured()) return;
+  if (coversRunning) { coversAgain = true; return; }
+  coversRunning = true;
+  coversAgain = false;
+  try {
+    const items = await db.getItems('game');
+    const weekAgo = Date.now() - 7 * 86400 * 1000;
+    const todo = items.filter((it) => (!it.coverUrl || !it.frCheckedAt) && !(it.infoCheckedAt > weekAgo));
+    for (const it of todo) {
+      if (document.visibilityState !== 'visible') break;
+      try {
+        const details = await fetchGameDetails(it.sourceId, it.platform);
+        await db.updateItem(it.key, (x) => (x ? { ...x, ...details, infoCheckedAt: Date.now() } : null));
+      } catch (e) {
+        if (!e.status || [401, 403, 429, 503].includes(e.status)) break; // pas de réseau / serveur non configuré
+        await db.updateItem(it.key, (x) => (x ? { ...x, infoCheckedAt: Date.now() } : null));
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  } finally {
+    coversRunning = false;
+  }
+  if (coversAgain) refreshMissingGameInfo();
+}
+
+/** Fiche IGDB d'un jeu → champs enregistrés (titre français, jaquette européenne…). */
+async function fetchGameDetails(id, platform) {
+  const [g] = await backend.igdb('games', `fields name,first_release_date,cover.image_id,platforms.name,genres.name,summary,url,involved_companies.company.name,involved_companies.developer,involved_companies.publisher,${IGDB_LOCALE_FIELDS}; where id = ${Number(id)};`);
+  if (!g) throw Object.assign(new Error('Jeu introuvable sur IGDB.'), { status: 404 });
+  const companies = g.involved_companies || [];
+  const loc = localizeGame(g);
+  return {
+    title: loc.title,
+    originalTitle: loc.originalTitle,
+    titleSource: loc.titleSource,
+    sortTitle: simplify(loc.title),
+    year: yearOf(g.first_release_date),
+    coverUrl: cover(loc.coverId, 't_cover_big'),
+    thumbUrl: cover(loc.coverId, 't_cover_small'),
+    coverRegion: loc.coverRegion,
+    europeRelease: europeanRelease(g, platform),
+    genres: (g.genres || []).map((x) => x.name),
+    summary: g.summary || '',
+    developers: companies.filter((c) => c.developer).map((c) => c.company?.name).filter(Boolean),
+    publishers: companies.filter((c) => c.publisher).map((c) => c.company?.name).filter(Boolean),
+    allPlatforms: (g.platforms || []).map((p) => p.name),
+    igdbUrl: g.url || '',
+    frCheckedAt: Date.now(),
+  };
 }
 
 function setValue(x, newValue, source) {
@@ -142,20 +210,26 @@ export const games = createMediaSection({
 
   async search({ title, platform }) {
     rememberPlatform(platform);
-    const data = await backend.igdb('games', `search "${igdbString(title)}"; fields name,first_release_date,cover.image_id,platforms.name; limit 40;`);
+    const data = await backend.igdb('games', `search "${igdbString(title)}"; fields name,first_release_date,cover.image_id,platforms.name,${IGDB_LOCALE_FIELDS}; limit 40;`);
     const p = platformByKey(platform);
     const onPlatform = data.filter((g) => (g.platforms || []).some((pl) => igdbMatches(p, pl.name)));
     const list = onPlatform.length ? onPlatform : data;
     return {
       note: data.length && !onPlatform.length ? `Aucun jeu indiqué sur ${p.name} : voici tous les jeux trouvés.` : '',
-      results: list.map((g) => ({
-        sourceId: g.id,
-        title: g.name,
-        year: yearOf(g.first_release_date),
-        thumb: cover(g.cover?.image_id, 't_cover_small'),
-        subtitle: (g.platforms || []).map((pl) => pl.name).slice(0, 4).join(', '),
-        meta: [yearOf(g.first_release_date)],
-      })),
+      results: list.map((g) => {
+        const loc = localizeGame(g);
+        const eu = europeanRelease(g, platform);
+        return {
+          sourceId: g.id,
+          title: loc.title,
+          originalTitle: loc.originalTitle,
+          year: yearOf(g.first_release_date),
+          thumb: cover(loc.coverId, 't_cover_small'),
+          subtitle: loc.title !== loc.originalTitle ? loc.originalTitle : (g.platforms || []).map((pl) => pl.name).slice(0, 4).join(', '),
+          meta: [yearOf(g.first_release_date), eu === true ? 'Sorti en Europe' : eu === false ? 'Hors Europe' : ''],
+          eu, // France / Europe : true, hors Europe : false, inconnu : null
+        };
+      }),
     };
   },
 
@@ -165,24 +239,9 @@ export const games = createMediaSection({
   ctxFromRoute: ([sid, platform]) => (/^\d+$/.test(sid || '') && platformByKey(platform) ? { sourceId: Number(sid), platform } : null),
   ctxFields: (ctx) => ({ platform: ctx.platform, platformName: platformByKey(ctx.platform).name }),
 
-  async fetchDetails(id) {
-    const [g] = await backend.igdb('games', `fields name,first_release_date,cover.image_id,platforms.name,genres.name,summary,url,involved_companies.company.name,involved_companies.developer,involved_companies.publisher; where id = ${Number(id)};`);
-    if (!g) throw new Error('Jeu introuvable sur IGDB.');
-    const companies = g.involved_companies || [];
-    return {
-      title: g.name,
-      sortTitle: simplify(g.name),
-      year: yearOf(g.first_release_date),
-      coverUrl: cover(g.cover?.image_id, 't_cover_big'),
-      thumbUrl: cover(g.cover?.image_id, 't_cover_small'),
-      genres: (g.genres || []).map((x) => x.name),
-      summary: g.summary || '',
-      developers: companies.filter((c) => c.developer).map((c) => c.company?.name).filter(Boolean),
-      publishers: companies.filter((c) => c.publisher).map((c) => c.company?.name).filter(Boolean),
-      allPlatforms: (g.platforms || []).map((p) => p.name),
-      igdbUrl: g.url || '',
-    };
-  },
+  fetchDetails: (id, ctx) => fetchGameDetails(id, ctx?.platform),
+  placeholder: 'ph-game',
+  onCollectionView: () => refreshMissingGameInfo(),
 
   fields: [
     { name: 'completeness', label: 'Complet ou loose', type: 'select', options: Object.entries(COMPLETENESS), default: 'complet' },
@@ -193,7 +252,10 @@ export const games = createMediaSection({
 
   heroKicker: (it) => [it.platformName, it.year].filter(Boolean).join(' · '),
   factsHtml: (it) => `
+    ${it.originalTitle && it.originalTitle !== it.title ? `<dt>Titre d'origine</dt><dd>${esc(it.originalTitle)}</dd>` : ''}
     <dt>Plateforme</dt><dd>${esc(it.platformName || '—')}</dd>
+    ${it.europeRelease === false ? '<dt>Sortie</dt><dd>⚠ Pas de sortie européenne connue sur cette plateforme (import ?)</dd>' : ''}
+    ${it.coverRegion ? `<dt>Jaquette</dt><dd>${it.coverRegion === 'standard' ? 'Version standard (pas de jaquette européenne sur IGDB)' : it.coverRegion === 'france' ? 'Version française' : 'Version européenne'}</dd>` : ''}
     <dt>Sortie</dt><dd>${esc(it.year || '—')}</dd>
     ${it.genres?.length ? `<dt>Genres</dt><dd><div class="tags">${it.genres.map((g) => `<span class="tag">${esc(g)}</span>`).join('')}</div></dd>` : ''}
     ${it.developers?.length ? `<dt>Développeur</dt><dd>${esc(it.developers.join(', '))}</dd>` : ''}
@@ -212,7 +274,7 @@ export const games = createMediaSection({
 
   subtitle: (it) => it.platformName || '',
   metaChips: (it) => [COMPLETENESS[it.collection?.completeness]?.split(' (')[0], conditionLabel(it.collection?.condition)].filter(Boolean),
-  searchText: (it) => [it.title, it.platformName, ...(it.genres || []), ...(it.developers || []), ...(it.publishers || [])].join(' '),
+  searchText: (it) => [it.title, it.originalTitle, it.platformName, ...(it.genres || []), ...(it.developers || []), ...(it.publishers || [])].join(' '),
   sorts: {
     title: { label: 'Titre A → Z', cmp: byTitle },
     'value-desc': { label: 'Valeur (décroissante)', cmp: (a, b) => nullsLast(valueOf(a), valueOf(b), (x, y) => y - x) || byTitle(a, b) },
@@ -249,7 +311,7 @@ export const games = createMediaSection({
         { k: 'Prix mis à jour', v: job?.lastCompletedAt ? dateFr(job.lastCompletedAt) : 'Jamais', small: true, s: nValued < count ? `${num(count - nValued)} sans prix` : 'tous ont un prix' },
       ])}
       ${top.length ? `<div class="card"><h2>Top 10 des plus chers</h2><ol class="top10">${top.map((it) => `<li><a href="#/games/item/${it.sourceId}/${it.platform}">
-        ${thumbHtml(it.thumbUrl, 'thumb poster-thumb')}<span class="t"><div>${esc(it.title)}</div><div class="a">${esc(it.platformName)}</div></span>
+        ${thumbHtml(it.thumbUrl || it.coverUrl, 'thumb poster-thumb ph-game')}<span class="t"><div>${esc(it.title)}</div><div class="a">${esc(it.platformName)}</div></span>
         <span class="p">${money(val(it))}</span></a></li>`).join('')}</ol></div>` : ''}
       <div class="card"><h2>Par plateforme</h2>${hbarsHtml(by((it) => it.platformName))}</div>
       <div class="card"><h2>Par genre</h2>${hbarsHtml(by((it) => (it.genres?.length ? it.genres : null)))}<p class="help">Un jeu peut avoir plusieurs genres.</p></div>`;
